@@ -336,7 +336,7 @@ function HostDashboard({ user }) {
           <div className="max-w-7xl mx-auto px-3 sm:px-6 py-1.5 sm:py-2">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-2 sm:gap-6">
               <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-6 w-full sm:w-auto">
-                <div className="text-yellow-400 font-bold text-xl sm:text-2xl md:text-3xl">CricAuction™</div>
+                <div className="text-yellow-400 font-bold text-xl sm:text-2xl md:text-3xl">CricAuction™ (Live v1.1)</div>
               </div>
               <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto justify-between sm:justify-end">
                 <div className="text-white text-sm sm:text-base md:text-lg flex gap-2 sm:gap-4">

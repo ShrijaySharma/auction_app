@@ -743,7 +743,7 @@ function AdminDashboard({ user }) {
               <div className="w-6 h-0.5 bg-white"></div>
             </button>
             <div>
-              <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
+              <h1 className="text-2xl font-bold text-white">Admin Dashboard (Live v1.1)</h1>
               <p className="text-gray-400 text-sm">Welcome, {user.username}</p>
             </div>
           </div>
