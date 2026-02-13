@@ -10,8 +10,8 @@ const getApiUrl = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  const host = window.location.hostname;
-  return `http://${host}:4000`;
+  // Use relative /api path for Vercel/proxies compatibility
+  return '/api';
 };
 
 const API_URL = getApiUrl();
