@@ -51,6 +51,12 @@ export function initDatabase() {
         db.run(`ALTER TABLE teams ADD COLUMN bidding_locked INTEGER DEFAULT 0`, (err) => {
           // Ignore error if column already exists
         });
+        db.run(`ALTER TABLE teams ADD COLUMN access_code TEXT`, (err) => {
+          // Ignore error if column already exists
+        });
+        db.run(`ALTER TABLE teams ADD COLUMN plain_password TEXT`, (err) => {
+          // Ignore error if column already exists
+        });
       });
 
       // Players table

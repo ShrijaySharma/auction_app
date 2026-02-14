@@ -101,5 +101,4 @@ npm run seed
 
 ---
 
-**That's it! You're ready to run your cricket auction! 🏏**
-
+**That's it! You're ready to run your EzAuction! 🏏**

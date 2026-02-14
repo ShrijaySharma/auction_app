@@ -3,15 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import { logout } from '../services/auth';
 import * as hostService from '../services/host';
-import BidNotification from '../components/BidNotification';
 import { getImageUrl } from '../utils/imageUtils';
+import BidNotification from '../components/BidNotification';
 
 // Auto-detect API URL based on current host
 const getApiUrl = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  // Use relative /api path for Vercel/proxies compatibility
   return '/api';
 };
 
@@ -20,207 +19,100 @@ const API_URL = getApiUrl();
 function HostDashboard({ user }) {
   const navigate = useNavigate();
   const [socket, setSocket] = useState(null);
+  const [status, setStatus] = useState('STOPPED');
   const [currentPlayer, setCurrentPlayer] = useState(null);
   const [highestBid, setHighestBid] = useState(null);
   const [currentBid, setCurrentBid] = useState(0);
-  const [biddingLocked, setBiddingLocked] = useState(false);
-  const [status, setStatus] = useState('STOPPED');
-  const [bidIncrements, setBidIncrements] = useState({ increment1: 500, increment2: 1000, increment3: 5000 });
-  const [bidFlash, setBidFlash] = useState(false);
-  const [stats, setStats] = useState({ sold: 0, unsold: 0, available: 0 });
   const [allBids, setAllBids] = useState([]);
+  const [teams, setTeams] = useState([]);
+  const [bidFlash, setBidFlash] = useState(false);
   const [notification, setNotification] = useState(null);
   const [notificationKey, setNotificationKey] = useState(0);
-  const [previousBid, setPreviousBid] = useState(0);
-  const [teams, setTeams] = useState([]);
-  const previousBidRef = useRef(0);
-  const currentPlayerRef = useRef(null);
-  const audioInitializedRef = useRef(false);
+
   const audioElementRef = useRef(null);
 
-  // Initialize audio on first user interaction
   useEffect(() => {
-    const initAudio = () => {
-      if (!audioInitializedRef.current) {
-        try {
-          const audio = new Audio('/notification_sound.wav');
-          audio.preload = 'auto';
-          audio.volume = 0.7;
-          // Try to load the audio
-          audio.load();
-          audioElementRef.current = audio;
-          audioInitializedRef.current = true;
-          console.log('Audio initialized for notifications');
-        } catch (err) {
-          console.error('Error initializing audio:', err);
-        }
-      }
-    };
+    console.log('HostDashboard mounted');
+    // Create audio element for notifications
+    const audio = new Audio('/notification_sound.wav');
+    audio.preload = 'auto';
+    audioElementRef.current = audio;
 
-    // Initialize on any user interaction
-    const events = ['click', 'touchstart', 'keydown'];
-    events.forEach(event => {
-      document.addEventListener(event, initAudio, { once: true });
+    const newSocket = io(API_URL, {
+      withCredentials: true,
+      transports: ['websocket', 'polling']
     });
-
-    return () => {
-      events.forEach(event => {
-        document.removeEventListener(event, initAudio);
-      });
-    };
-  }, []);
-
-  useEffect(() => {
-    // Initialize socket
-    const newSocket = io(API_URL, { withCredentials: true });
     setSocket(newSocket);
 
-    // Load initial data
+    newSocket.on('connect', () => console.log('Host connected to socket'));
+
+    // Initial data load
     loadCurrentInfo();
     loadTeams();
 
-    // Socket event listeners
-    newSocket.on('player-loaded', (data) => {
-      setCurrentPlayer(data.player);
-      currentPlayerRef.current = data.player;
-      setHighestBid(null);
-      setPreviousBid(0);
-      previousBidRef.current = 0;
+    newSocket.on('bid-placed', (data) => {
+      console.log('Bid placed event:', data);
+      if (data.bid) {
+        setBidFlash(true);
+        setTimeout(() => setBidFlash(false), 1000);
+
+        setNotification({
+          id: Date.now(),
+          teamName: data.bid.team_name,
+          increment: data.increment || 0
+        });
+        setNotificationKey(prev => prev + 1);
+
+        setHighestBid(data.bid);
+        setCurrentBid(data.bid.amount);
+
+        if (audioElementRef.current) {
+          audioElementRef.current.currentTime = 0;
+          audioElementRef.current.play().catch(err => console.error('Audio play failed:', err));
+        }
+      }
       loadCurrentInfo();
     });
 
-    newSocket.on('bid-placed', (data) => {
-      setBidFlash(true);
-      setTimeout(() => setBidFlash(false), 500);
-
-      if (data.bid) {
-        const newBid = data.bid.amount;
-
-        // Use previous bid from server if available, otherwise use ref
-        const prevBid = data.previousBid !== undefined ? data.previousBid : previousBidRef.current;
-
-        // Calculate increment using server-provided previous bid or fallback
-        let increment = 0;
-        if (prevBid > 0 && prevBid < newBid) {
-          increment = newBid - prevBid;
-        } else if (prevBid === 0) {
-          // First bid - calculate from base price
-          const basePrice = currentPlayerRef.current?.base_price || currentBid || 0;
-          increment = newBid - basePrice;
-        } else {
-          // Fallback: use ref if server didn't provide previous bid
-          increment = newBid - previousBidRef.current;
-        }
-
-        // Update previous bid ref BEFORE showing notification to prevent race conditions
-        previousBidRef.current = newBid;
-        setPreviousBid(newBid);
-
-        // Show notification immediately if there's a valid increment and team name
-        if (increment > 0 && data.bid.team_name) {
-          const newKey = `${Date.now()}-${Math.random()}`;
-          setNotificationKey(newKey);
-          setNotification({
-            id: newKey,
-            teamName: data.bid.team_name,
-            increment: increment
-          });
-        }
-
-        // Update bid state immediately
-        setHighestBid(data.bid);
-        setCurrentBid(data.bid.amount);
-      }
-
-      // Load info after a small delay to ensure notification is set first
-      setTimeout(() => {
-        loadCurrentInfo();
-        loadAllBids();
-      }, 100);
-    });
-
     newSocket.on('bid-updated', (data) => {
-      setBidFlash(true);
-      setTimeout(() => setBidFlash(false), 500);
-
+      console.log('Bid updated event:', data);
       if (data.highestBid) {
-        const newBid = data.highestBid.amount;
-
-        // Use previous bid from server if available, otherwise use ref
-        const prevBid = data.previousBid !== undefined ? data.previousBid : previousBidRef.current;
-
-        // Calculate increment using server-provided previous bid or fallback
-        let increment = 0;
-        if (prevBid > 0 && prevBid < newBid) {
-          increment = newBid - prevBid;
-        } else if (prevBid === 0) {
-          // First bid - calculate from base price
-          const basePrice = currentPlayerRef.current?.base_price || currentBid || 0;
-          increment = newBid - basePrice;
-        } else {
-          // Fallback: use ref if server didn't provide previous bid
-          increment = newBid - previousBidRef.current;
-        }
-
-        // Update previous bid ref BEFORE showing notification to prevent race conditions
-        previousBidRef.current = newBid;
-        setPreviousBid(newBid);
-
-        // Show notification immediately if there's a valid increment and team name
-        if (increment > 0 && data.highestBid.team_name) {
-          const newKey = `${Date.now()}-${Math.random()}`;
-          setNotificationKey(newKey);
-          setNotification({
-            id: newKey,
-            teamName: data.highestBid.team_name,
-            increment: increment
-          });
-        }
-
-        // Update bid state immediately
         setHighestBid(data.highestBid);
         setCurrentBid(data.highestBid.amount);
-      } else if (!data.highestBid) {
-        // Handle undo to zero bids
-        setHighestBid(null);
-        setCurrentBid(currentPlayerRef.current?.base_price || 0);
-      }
 
-      // Load info after a small delay to ensure notification is set first
-      setTimeout(() => {
-        loadCurrentInfo();
-        loadAllBids();
-      }, 100);
+        if (audioElementRef.current) {
+          audioElementRef.current.currentTime = 0;
+          audioElementRef.current.play().catch(err => console.error('Audio play failed:', err));
+        }
+      } else if (!data.highestBid) {
+        setHighestBid(null);
+        loadCurrentInfo(); // Refresh to get initial base price if bid undo results in 0 bids
+      }
+      loadCurrentInfo();
+    });
+
+    newSocket.on('player-loaded', (data) => {
+      console.log('Player loaded event:', data);
+      setCurrentPlayer(data.player);
+      setHighestBid(null);
+      setCurrentBid(data.player ? data.player.base_price : 0);
+      setAllBids([]);
     });
 
     newSocket.on('auction-status-changed', (data) => {
       setStatus(data.status);
     });
 
-    newSocket.on('bidding-locked', (data) => {
-      setBiddingLocked(data.locked);
-    });
-
-    newSocket.on('bid-increments-changed', (data) => {
-      setBidIncrements({
-        increment1: data.increment1,
-        increment2: data.increment2,
-        increment3: data.increment3
-      });
-    });
-
     newSocket.on('bidding-reset', () => {
       setHighestBid(null);
+      loadCurrentInfo();
+    });
+
+    newSocket.on('all-players-deleted', () => {
+      setCurrentPlayer(null);
+      setHighestBid(null);
+      setCurrentBid(0);
       setAllBids([]);
-      loadCurrentInfo();
-    });
-
-    newSocket.on('player-marked', () => {
-      loadCurrentInfo();
-    });
-
-    newSocket.on('team-budget-updated', () => {
-      loadTeams();
     });
 
     // Poll for updates every 2 seconds as backup
@@ -235,53 +127,41 @@ function HostDashboard({ user }) {
   const loadCurrentInfo = async () => {
     try {
       const data = await hostService.getCurrentInfo();
-      setCurrentPlayer(data.player);
-      currentPlayerRef.current = data.player;
-      setHighestBid(data.highestBid);
-      const newBid = data.currentBid || 0;
-      setCurrentBid(newBid);
-      setBiddingLocked(data.biddingLocked);
-      setStatus(data.status);
-      setBidIncrements(data.bidIncrements);
-      if (data.stats) {
-        setStats(data.stats);
+      // console.log('Loaded current info:', data);
+
+      // Only update if data has actually changed to prevent unnecessary re-renders
+      if (JSON.stringify(data.player) !== JSON.stringify(currentPlayer)) {
+        setCurrentPlayer(data.player);
       }
 
-      // Update previous bid if player changed
-      if (data.player && (!currentPlayerRef.current || currentPlayerRef.current.id !== data.player.id)) {
-        const basePrice = data.player.base_price || 0;
-        previousBidRef.current = basePrice;
-        setPreviousBid(basePrice);
-      } else if (data.highestBid && data.highestBid.amount) {
-        // Update previous bid to match the highest bid if it exists
-        // Only update if it's different to avoid overwriting during notification
-        if (previousBidRef.current !== data.highestBid.amount) {
-          previousBidRef.current = data.highestBid.amount;
-          setPreviousBid(data.highestBid.amount);
-        }
-      } else if (newBid > 0 && previousBidRef.current === 0) {
-        // Initialize previous bid if we have a current bid but no previous bid
-        previousBidRef.current = newBid;
-        setPreviousBid(newBid);
+      if (JSON.stringify(data.highestBid) !== JSON.stringify(highestBid)) {
+        setHighestBid(data.highestBid);
+      }
+
+      const newBid = data.highestBid ? data.highestBid.amount : (data.player ? data.player.base_price : 0);
+      if (newBid !== currentBid) {
+        setCurrentBid(newBid);
+      }
+
+      if (data.status !== status) {
+        setStatus(data.status);
+      }
+
+      const bidsData = await hostService.getAllBids();
+      if (JSON.stringify(bidsData.bids) !== JSON.stringify(allBids)) {
+        setAllBids(bidsData.bids || []);
       }
     } catch (error) {
       console.error('Error loading current info:', error);
     }
   };
 
-  const loadAllBids = async () => {
-    try {
-      const data = await hostService.getAllBids();
-      setAllBids(data.bids || []);
-    } catch (error) {
-      console.error('Error loading bids:', error);
-    }
-  };
-
   const loadTeams = async () => {
     try {
-      const teamsData = await hostService.getAllTeams();
-      setTeams(teamsData);
+      const data = await hostService.getAllTeams();
+      if (JSON.stringify(data) !== JSON.stringify(teams)) {
+        setTeams(data || []);
+      }
     } catch (error) {
       console.error('Error loading teams:', error);
     }
@@ -290,33 +170,36 @@ function HostDashboard({ user }) {
   const handleLogout = async () => {
     try {
       await logout();
-      // Force full page reload to clear all state
-      window.location.href = '/login';
+      navigate('/login');
     } catch (error) {
-      console.error('Logout error:', error);
-      // Still redirect even if logout fails
-      window.location.href = '/login';
+      console.error('Logout failed:', error);
     }
   };
 
-  // Format number in Indian style (1,00,000)
   const formatIndianNumber = (num) => {
-    return num.toLocaleString('en-IN');
+    if (num === null || num === undefined) return '0';
+    const s = num.toString();
+    const lastThree = s.substring(s.length - 3);
+    const otherNumbers = s.substring(0, s.length - 3);
+    if (otherNumbers !== '') {
+      return otherNumbers.replace(/\B(?=(\d{2})+(?!\d))/g, ",") + "," + lastThree;
+    }
+    return lastThree;
   };
 
   return (
-    <div className="min-h-screen relative overflow-hidden">
-      {/* Bid Notification */}
+    <div className="h-screen w-screen relative overflow-hidden bg-black font-sans selection:bg-yellow-400 selection:text-blue-900">
+      {/* Bid Notification Overlay */}
       {notification && (
         <BidNotification
-          key={notification.id || notificationKey}
+          key={notification.id}
           teamName={notification.teamName}
           increment={notification.increment}
           onClose={() => setNotification(null)}
         />
       )}
 
-      {/* Stadium Background Image */}
+      {/* Cinematic Background */}
       <div
         className="fixed inset-0 z-0"
         style={{
@@ -326,108 +209,159 @@ function HostDashboard({ user }) {
           backgroundRepeat: 'no-repeat'
         }}
       >
-        {/* Blurred overlay for better text readability */}
-        <div className="absolute inset-0 bg-black/30 backdrop-blur-lg"></div>
+        <div className="absolute inset-0 bg-gradient-to-b from-blue-900/60 via-black/40 to-black/80 backdrop-blur-[2px]"></div>
       </div>
 
-      <div className="relative z-10 min-h-screen">
-        {/* Top Navigation Bar - Mobile Responsive */}
-        <div className="bg-gradient-to-r from-blue-900/95 to-green-900/95 border-b-2 border-yellow-400 shadow-lg">
-          <div className="max-w-7xl mx-auto px-3 sm:px-6 py-1.5 sm:py-2">
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 sm:gap-6">
-              <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-6 w-full sm:w-auto">
-                <div className="text-yellow-400 font-bold text-xl sm:text-2xl md:text-3xl">CricAuction™ (Live v1.1)</div>
-              </div>
-              <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto justify-between sm:justify-end">
-                <div className="text-white text-sm sm:text-base md:text-lg flex gap-2 sm:gap-4">
-                  <span className="text-yellow-400 font-bold">AUDIENCE VIEW</span>
-                </div>
-                <div className="flex items-center gap-2 sm:gap-3">
-                  <div className="w-7 h-7 sm:w-9 sm:h-9 bg-yellow-400 rounded-full flex items-center justify-center text-blue-900 font-bold text-sm sm:text-base">
-                    👁
-                  </div>
-                  <button
-                    onClick={handleLogout}
-                    className="text-white hover:text-yellow-400 text-sm sm:text-base md:text-lg px-2 py-1 font-bold"
-                  >
-                    Logout
-                  </button>
-                </div>
-              </div>
+      <div className="relative z-10 h-full w-full flex flex-col">
+        {/* Top bar - Simplified & Centered */}
+        <div className="h-20 flex items-center justify-between px-8 bg-black/40 backdrop-blur-md border-b border-white/10 relative">
+          <div className="w-32"></div> {/* Spacer for symmetry */}
+
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
+            <div className="text-4xl sm:text-5xl font-black italic tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-200 drop-shadow-2xl">
+              EzAuction™
             </div>
+          </div>
+
+          <div className="flex items-center gap-6">
+            <button
+              onClick={handleLogout}
+              className="text-white/60 hover:text-white transition-all text-sm font-black uppercase tracking-widest px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl border border-white/10"
+            >
+              Logout
+            </button>
           </div>
         </div>
 
-        {/* Main Content - Mobile Responsive */}
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-2 sm:py-3 pb-2 sm:pb-3 flex flex-col min-h-[calc(100vh-70px)]">
+        {/* Main Grid */}
+        <div className="flex-1 overflow-hidden p-6 gap-6 grid grid-cols-12 content-stretch">
           {currentPlayer ? (
-            <div className="flex flex-col lg:flex-row gap-4 h-full">
-              {/* Left: Player Image */}
-              <div className={`lg:w-1/3 bg-white/10 backdrop-blur-md rounded-xl sm:rounded-2xl p-3 sm:p-4 border-2 transition-all flex flex-col items-center justify-center ${bidFlash ? 'border-yellow-400 shadow-2xl shadow-yellow-400/50' : 'border-yellow-400/50'}`}>
-                <div className="relative w-full aspect-[3/4] max-w-[400px]">
-                  <div className="w-full h-full rounded-2xl border-4 sm:border-8 border-yellow-400 p-1 sm:p-2 bg-gradient-to-br from-yellow-300 to-yellow-500 shadow-2xl overflow-hidden">
+            <>
+              {/* Left Column: Player Profile */}
+              <div className="col-span-3 flex flex-col gap-6 overflow-hidden">
+                <div className="bg-gray-900/90 backdrop-blur-2xl rounded-3xl p-7 border-2 border-white/20 shadow-2xl flex flex-col gap-5">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-yellow-400/20 rounded-xl shadow-inner">
+                      <svg className="w-6 h-6 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                      </svg>
+                    </div>
+                    <span className="text-yellow-400/80 font-black uppercase tracking-[0.25em] text-[10px]">Player Category</span>
+                  </div>
+                  <div>
+                    <h2 className="text-white text-4xl sm:text-5xl font-black tracking-tighter mb-2 drop-shadow-2xl leading-tight">{currentPlayer.name}</h2>
+                    <div className="inline-block px-5 py-2 bg-yellow-400 text-blue-900 rounded-full text-xs font-black uppercase tracking-tighter mb-6 shadow-xl shadow-yellow-400/30">
+                      {currentPlayer.role}
+                    </div>
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center bg-white/5 p-4 rounded-2xl border border-white/10">
+                        <span className="text-white/40 text-[10px] font-black uppercase tracking-widest">Category</span>
+                        <span className="text-white font-black text-xl tracking-tight uppercase">{currentPlayer.role}</span>
+                      </div>
+                      <div className="flex justify-between items-center bg-white/10 p-4 rounded-2xl border border-white/20 shadow-inner">
+                        <span className="text-yellow-400/60 text-[10px] font-black uppercase tracking-widest">Base Price</span>
+                        <span className="text-yellow-400 font-black text-2xl font-mono tracking-tighter drop-shadow">₹{formatIndianNumber(currentPlayer.base_price || 0)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 bg-black/40 backdrop-blur-xl rounded-3xl p-6 border border-white/10 shadow-2xl overflow-hidden flex flex-col">
+                  <h3 className="text-white/40 font-bold uppercase tracking-widest text-[10px] mb-4 flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span> Live Bids
+                  </h3>
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-2 scrollbar-none">
+                    {allBids.length > 0 ? (
+                      allBids.slice(0, 10).map((bid, index) => (
+                        <div key={index} className="flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/5 animate-slide-in-right">
+                          <span className="text-white/90 font-black text-sm truncate max-w-[130px] uppercase tracking-tight">{bid.team_name}</span>
+                          <span className="text-green-400 font-black font-mono text-lg">₹{formatIndianNumber(bid.amount)}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-white/20 italic text-sm text-center font-bold tracking-widest uppercase opacity-40">
+                        Silent...
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Center Column: Image */}
+              <div className="col-span-5 flex flex-col items-center justify-center relative overflow-hidden group px-6">
+                <div className={`relative h-full w-full max-h-[78vh] aspect-[3/4] transition-all duration-500 ${bidFlash ? 'scale-[1.03]' : 'scale-100'}`}>
+                  <div className="absolute inset-0 bg-yellow-400/10 rounded-[4rem] blur-[100px] animate-pulse"></div>
+                  <div className={`w-full h-full rounded-[3rem] border-[12px] p-5 bg-black/50 backdrop-blur-3xl shadow-2xl flex items-center justify-center overflow-hidden transition-all duration-300 ${bidFlash ? 'border-yellow-400 shadow-yellow-400/40' : 'border-white/10'}`}>
                     <img
                       src={getImageUrl(currentPlayer.image)}
                       alt={currentPlayer.name}
-                      className="w-full h-full object-contain"
-                      onError={(e) => {
-                        e.target.src = 'https://via.placeholder.com/600x800?text=Player';
-                      }}
+                      className="w-full h-full object-contain filter drop-shadow-[0_25px_50px_rgba(0,0,0,0.8)]"
+                      onError={(e) => { e.target.src = 'https://via.placeholder.com/600x800?text=Player'; }}
                     />
                   </div>
                   {currentPlayer.serial_number && (
-                    <div className="absolute -top-2 -right-2 sm:-top-4 sm:-right-4 bg-yellow-400 text-blue-900 font-bold text-2xl sm:text-4xl md:text-5xl lg:text-6xl px-3 sm:px-5 py-0.5 sm:py-1.5 rounded-xl shadow-lg border-2 sm:border-4 border-blue-900">
-                      {currentPlayer.serial_number}
+                    <div className="absolute -top-4 -right-4 h-32 w-32 bg-gradient-to-br from-yellow-300 to-yellow-500 text-blue-900 rounded-3xl shadow-2xl border-4 border-white flex flex-col items-center justify-center transform rotate-12 transition-transform hover:rotate-0">
+                      <span className="text-[10px] font-black uppercase opacity-60">SR No.</span>
+                      <span className="text-6xl font-black">{currentPlayer.serial_number}</span>
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Right: Player Info and Current Bid */}
-              <div className="lg:w-2/3 flex flex-col gap-4">
-                {/* Player Info Card */}
-                <div className="bg-white/10 backdrop-blur-md rounded-xl sm:rounded-2xl p-4 sm:p-6 border-2 border-yellow-400/50 flex-1 flex flex-col justify-center">
-                  <div className="space-y-4">
-                    <div className="bg-yellow-400 text-blue-900 px-4 sm:px-8 py-2 sm:py-4 rounded-xl font-black text-2xl sm:text-4xl md:text-5xl lg:text-7xl shadow-2xl uppercase tracking-tighter text-center lg:text-left">
-                      {currentPlayer.name}
-                    </div>
-                    <div className="flex flex-wrap gap-4 items-center justify-center lg:justify-start">
-                      <div className="bg-white/90 text-blue-900 px-4 sm:px-6 py-1 sm:py-3 rounded-lg font-bold text-xl sm:text-2xl md:text-3xl shadow-xl">
-                        {currentPlayer.role}
-                      </div>
-                      <div className="bg-blue-600 text-white px-4 sm:px-6 py-1 sm:py-3 rounded-lg font-bold text-lg sm:text-xl md:text-2xl shadow-xl border-2 border-white/20">
-                        BASE: ₹{formatIndianNumber(currentPlayer.base_price || 0)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Current Bid Card */}
-                <div className={`bg-gradient-to-b from-yellow-300 to-yellow-500 rounded-xl sm:rounded-2xl p-6 sm:p-8 shadow-[0_20px_50px_rgba(234,179,8,0.4)] border-4 border-white/50 flex flex-col items-center justify-center transition-all ${bidFlash ? 'scale-[1.02] shadow-yellow-400/80' : ''}`}>
-                  <div className="text-blue-900 text-lg sm:text-2xl font-extrabold mb-2 tracking-widest uppercase">CURRENT BID</div>
-                  <div className={`text-blue-900 text-6xl sm:text-7xl md:text-8xl lg:text-9xl font-black leading-none drop-shadow-2xl transition-all ${bidFlash ? 'scale-110' : ''}`}>
+              {/* Right Column: Bid Action */}
+              <div className="col-span-4 flex flex-col gap-6">
+                <div className={`flex-1 bg-gradient-to-b from-yellow-300 to-yellow-500 rounded-[3rem] p-10 shadow-2xl border-[12px] border-white flex flex-col items-center justify-center text-blue-900 transition-all duration-500 ${bidFlash ? 'scale-[1.05] rotate-1' : ''}`}>
+                  <div className="text-blue-900/40 text-2xl font-black tracking-[0.5em] uppercase mb-6">Current Bid</div>
+                  <div className={`text-8xl sm:text-9xl font-black leading-none tracking-tighter transition-all ${bidFlash ? 'scale-110 mb-6' : 'mb-4'} drop-shadow-xl`}>
                     ₹{formatIndianNumber(currentBid)}
                   </div>
-                  {highestBid && (
-                    <div className="mt-6 bg-blue-900 text-yellow-400 px-6 sm:px-10 py-2 sm:py-4 rounded-full text-xl sm:text-3xl md:text-4xl lg:text-5xl font-black shadow-2xl border-4 border-yellow-400 animate-pulse">
-                      LEADING: {highestBid.team_name}
+                  <div className="h-1.5 w-32 bg-blue-900/10 my-10 rounded-full"></div>
+
+                  {highestBid ? (
+                    <div className="w-full flex flex-col items-center animate-bounce-slow">
+                      <div className="text-blue-900/60 text-sm font-black uppercase tracking-[0.4em] mb-5">Leading Team</div>
+                      <div className="bg-blue-900 text-yellow-400 px-12 py-6 rounded-[2.5rem] text-4xl sm:text-5xl font-black shadow-2xl border-4 border-white/20 flex items-center gap-6">
+                        <span className="text-blue-300">👑</span> {highestBid.team_name}
+                      </div>
                     </div>
+                  ) : (
+                    <div className="text-blue-900/50 font-black italic text-3xl animate-pulse uppercase tracking-[0.2em]">Awaiting First Bid</div>
                   )}
                 </div>
               </div>
-            </div>
+            </>
           ) : (
-            <div className="bg-gradient-to-br from-blue-900/95 to-green-900/95 rounded-xl sm:rounded-2xl p-8 sm:p-16 border-2 border-blue-700 text-center shadow-xl">
-              <div className="text-yellow-400 text-4xl sm:text-5xl md:text-6xl mb-4">🏏</div>
-              <p className="text-white text-2xl sm:text-3xl md:text-4xl font-bold">Waiting for auction to begin...</p>
-              <p className="text-gray-300 mt-2 text-lg sm:text-xl md:text-2xl font-bold">The auction will start shortly</p>
+            <div className="col-span-12 flex items-center justify-center h-full">
+              <div className="bg-white/5 backdrop-blur-3xl rounded-[4rem] p-24 border border-white/10 text-center shadow-2xl relative overflow-hidden group">
+                <div className="absolute inset-0 bg-yellow-400/5 blur-[120px]"></div>
+                <div className="relative">
+                  <div className="text-[12rem] mb-12 animate-bounce opacity-40">🏏</div>
+                  <h1 className="text-white text-8xl font-black tracking-tighter mb-6 opacity-90 drop-shadow-2xl">READY FOR ACTION</h1>
+                  <p className="text-yellow-400 text-3xl font-black tracking-[0.6em] uppercase opacity-60 animate-pulse">Waiting for host...</p>
+                </div>
+              </div>
             </div>
           )}
         </div>
+
+        {/* Promotional Footer - Enhanced Visibility */}
+        <div className="h-16 flex items-center justify-center bg-black/95 border-t-2 border-yellow-400/30 relative z-20 shadow-[0_-10px_30px_rgba(0,0,0,0.8)]">
+          <p className="text-white/80 text-sm sm:text-lg font-black tracking-[0.4em] uppercase drop-shadow-lg">
+            For renting this auction app contact <span className="text-yellow-400 font-black px-4 bg-yellow-400/10 py-1 rounded-lg border border-yellow-400/20 scale-110 inline-block mx-2">7697544446</span>
+          </p>
+        </div>
       </div>
+
+      <style>{`
+        @keyframes slide-in-right { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .animate-slide-in-right { animation: slide-in-right 0.6s cubic-bezier(0.23, 1, 0.32, 1) forwards; }
+        @keyframes bounce-slow { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
+        .animate-bounce-slow { animation: bounce-slow 4s infinite ease-in-out; }
+        .scrollbar-none::-webkit-scrollbar { display: none; }
+        .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+      `}</style>
     </div>
   );
 }
 
 export default HostDashboard;
-

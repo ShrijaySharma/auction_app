@@ -42,7 +42,7 @@ app.use('/uploads', express.static(join(__dirname, 'uploads')));
 
 // Health check endpoint
 app.get('/', (req, res) => {
-  res.json({ message: 'Cricket Auction Server is running!' });
+  res.json({ message: 'EzAuction Server is running!' });
 });
 
 // Trust proxy (required for Render/Heroku SSL)

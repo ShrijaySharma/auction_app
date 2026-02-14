@@ -1,7 +1,7 @@
 {
   "name": "cricket-auction-backend",
   "version": "1.0.0",
-  "description": "Backend for cricket auction system",
+  "description": "Backend for EzAuction system",
   "main": "server.js",
   "type": "module",
   "scripts": {

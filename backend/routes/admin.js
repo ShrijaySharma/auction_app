@@ -25,7 +25,7 @@ router.get('/auction-state', (req, res) => {
           status: 'STOPPED',
           currentPlayerId: null,
           biddingLocked: false,
-          bidIncrements: { increment1: 500, increment2: 1000, increment3: 5000 }
+          bidIncrements: { increment1: 500, increment2: 1000 }
         });
       });
     } else {
@@ -35,8 +35,7 @@ router.get('/auction-state', (req, res) => {
         biddingLocked: state.bidding_locked === 1,
         bidIncrements: {
           increment1: state.bid_increment_1,
-          increment2: state.bid_increment_2,
-          increment3: state.bid_increment_3
+          increment2: state.bid_increment_2
         },
         maxPlayersPerTeam: state.max_players_per_team || 10,
         enforceMaxBid: state.enforce_max_bid === 1
@@ -312,22 +311,22 @@ router.post('/max-players', (req, res) => {
 
 // Update bid increments
 router.post('/bid-increments', (req, res) => {
-  const { increment1, increment2, increment3 } = req.body;
+  const { increment1, increment2 } = req.body;
   const db = req.app.locals.db;
   const io = req.app.locals.io;
 
   db.run(
     `UPDATE auction_state 
-     SET bid_increment_1 = ?, bid_increment_2 = ?, bid_increment_3 = ?, updated_at = CURRENT_TIMESTAMP 
+     SET bid_increment_1 = ?, bid_increment_2 = ?, updated_at = CURRENT_TIMESTAMP 
      WHERE id = 1`,
-    [increment1, increment2, increment3],
+    [increment1, increment2],
     function (err) {
       if (err) {
         return res.status(500).json({ error: 'Database error' });
       }
 
-      io.emit('bid-increments-changed', { increment1, increment2, increment3 });
-      res.json({ success: true, increments: { increment1, increment2, increment3 } });
+      io.emit('bid-increments-changed', { increment1, increment2 });
+      res.json({ success: true, increments: { increment1, increment2 } });
     }
   );
 });
@@ -554,9 +553,14 @@ router.post('/reset-unsold-tag/:playerId', (req, res) => {
   const db = req.app.locals.db;
   const io = req.app.locals.io;
 
+  // Reset was_unsold flag and change status back to AVAILABLE if it's UNSOLD
   db.run(
     `UPDATE players 
-     SET was_unsold = 0
+     SET was_unsold = 0,
+         status = CASE 
+           WHEN status = 'UNSOLD' THEN 'AVAILABLE'
+           ELSE status 
+         END
      WHERE id = ?`,
     [playerId],
     function (err) {
@@ -568,8 +572,8 @@ router.post('/reset-unsold-tag/:playerId', (req, res) => {
         return res.status(404).json({ error: 'Player not found' });
       }
 
-      // Emit event to update UI
-      io.emit('player-updated', { playerId });
+      // Emit event to update UI for all clients (admin and owners)
+      io.emit('player-marked', { playerId });
       res.json({ success: true, message: 'Unsold tag reset successfully' });
     }
   );
@@ -969,9 +973,50 @@ router.post('/teams', upload.single('logo'), (req, res) => {
 
         // --- AUTOMATED CREDENTIALS GENERATION ---
         try {
-          // 1. Generate username (first 3 letters, lowercase, no spaces)
-          const username = name.trim().toLowerCase().replace(/\s+/g, '').substring(0, 3);
-          const password = username + '123';
+          // Helper function to check if username exists
+          const checkUsernameExists = (username) => {
+            return new Promise((resolve, reject) => {
+              db.get('SELECT id FROM users WHERE username = ?', [username], (err, row) => {
+                if (err) reject(err);
+                else resolve(!!row);
+              });
+            });
+          };
+
+          // Generate unique credentials
+          let baseUsername = name.trim().toLowerCase().replace(/[^a-z0-9]/g, '').substring(0, 3);
+          if (baseUsername.length < 3) {
+            baseUsername = (baseUsername + 'team').substring(0, 3);
+          }
+
+          let username = '';
+          let isUnique = false;
+          let attempts = 0;
+
+          while (!isUnique && attempts < 20) {
+            // Generate random 3-digit number
+            const suffix = Math.floor(100 + Math.random() * 900); // 100-999
+            username = `${baseUsername}${suffix}`;
+
+            try {
+              const exists = await checkUsernameExists(username);
+              if (!exists) {
+                isUnique = true;
+              }
+            } catch (err) {
+              console.error('Error checking username uniqueness:', err);
+              break;
+            }
+            attempts++;
+          }
+
+          // Fallback if 3 digits failed (highly unlikely)
+          if (!isUnique) {
+            const suffix = Math.floor(1000 + Math.random() * 9000); // 1000-9999
+            username = `${baseUsername}${suffix}`;
+          }
+
+          const password = username; // ID and Password are the same
 
           // 2. Hash password
           const saltRounds = 10;
@@ -984,14 +1029,12 @@ router.post('/teams', upload.single('logo'), (req, res) => {
             function (err) {
               if (err) {
                 console.error('Error creating automated user:', err);
-                // We don't fail the whole request since team is already created,
-                // but we should log it.
               } else {
                 const userId = this.lastID;
                 console.log(`Automated user created: ${username} (ID: ${userId}) for team ${teamId}`);
 
-                // 4. Update team with owner_id
-                db.run('UPDATE teams SET owner_id = ? WHERE id = ?', [userId, teamId]);
+                // 4. Update team with owner_id AND access_code AND plain_password
+                db.run('UPDATE teams SET owner_id = ?, access_code = ?, plain_password = ? WHERE id = ?', [userId, username, password, teamId]);
               }
 
               // Get the created team to return in response
@@ -1185,6 +1228,85 @@ router.put('/teams/:id/lock-bidding', (req, res) => {
       res.json({ success: true, locked });
     }
   );
+});
+
+// Update team credentials manually
+router.put('/teams/:id/credentials', async (req, res) => {
+  const { id } = req.params;
+  const { username, password } = req.body;
+  const db = req.app.locals.db;
+  const io = req.app.locals.io;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
+
+  try {
+    // 1. Check if username exists (excluding current team's owner)
+    // First get current team's owner_id
+    const team = await new Promise((resolve, reject) => {
+      db.get('SELECT owner_id FROM teams WHERE id = ?', [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+
+    // Check availability
+    const existingUser = await new Promise((resolve, reject) => {
+      db.get('SELECT id FROM users WHERE username = ? AND id != ?', [username, team.owner_id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: 'Username already taken' });
+    }
+
+    // 2. Hash new password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // 3. Update User
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE users SET username = ?, password = ? WHERE id = ?', [username, hashedPassword, team.owner_id], function (err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // 4. Update Team (access_code and plain_password)
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE teams SET access_code = ?, plain_password = ? WHERE id = ?', [username, password, id], function (err) {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+
+    // 5. Emit event
+    const updatedTeam = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM teams WHERE id = ?', [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+
+    // Transform boolean fields
+    const teamToSend = {
+      ...updatedTeam,
+      bidding_locked: updatedTeam.bidding_locked === 1
+    };
+
+    io.emit('team-updated', { team: teamToSend });
+    res.json({ success: true, team: teamToSend });
+
+  } catch (error) {
+    console.error('Error updating credentials:', error);
+    res.status(500).json({ error: 'Server error updating credentials: ' + error.message });
+  }
 });
 
 // Get players by status (for owner dashboard)

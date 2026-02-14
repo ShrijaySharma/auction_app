@@ -24,8 +24,8 @@ function AdminDashboard({ user }) {
   const [highestBid, setHighestBid] = useState(null);
   const [allBids, setAllBids] = useState([]);
   const [players, setPlayers] = useState([]);
-  const [bidIncrements, setBidIncrements] = useState({ increment1: 500, increment2: 1000, increment3: 5000 });
-  const [newIncrements, setNewIncrements] = useState({ increment1: 500, increment2: 1000, increment3: 5000 });
+  const [bidIncrements, setBidIncrements] = useState({ increment1: 500, increment2: 1000 });
+  const [newIncrements, setNewIncrements] = useState({ increment1: 500, increment2: 1000 });
   const [maxPlayersPerTeam, setMaxPlayersPerTeam] = useState(10);
   const [newMaxPlayersPerTeam, setNewMaxPlayersPerTeam] = useState(10);
   const [selectedPlayerId, setSelectedPlayerId] = useState('');
@@ -58,12 +58,30 @@ function AdminDashboard({ user }) {
     budget: '',
     logo: null
   });
+  const [editingCredentials, setEditingCredentials] = useState(null);
+  const [credentialForm, setCredentialForm] = useState({ username: '', password: '' });
   const [teamLogoPreview, setTeamLogoPreview] = useState(null);
   const [showTeamSquads, setShowTeamSquads] = useState(false);
   const [teamSquads, setTeamSquads] = useState([]);
   const [enforceMaxBid, setEnforceMaxBid] = useState(false);
   const [showPurseMonitoring, setShowPurseMonitoring] = useState(false);
   const [showBiddingLogicModal, setShowBiddingLogicModal] = useState(false);
+  const [playerSearch, setPlayerSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState('All');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [showCredentialsModal, setShowCredentialsModal] = useState(false);
+
+  // Disable body scroll when any modal is open
+  useEffect(() => {
+    if (showHistory || showPlayerModal || showTeamManagement || showTeamModal || showTeamSquads || showPurseMonitoring || showBiddingLogicModal || showCredentialsModal) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = 'unset';
+    }
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, [showHistory, showPlayerModal, showTeamManagement, showTeamModal, showTeamSquads, showPurseMonitoring, showBiddingLogicModal, showCredentialsModal]);
 
   useEffect(() => {
     // Initialize socket
@@ -102,12 +120,23 @@ function AdminDashboard({ user }) {
     });
 
     newSocket.on('bid-placed', (data) => {
+      if (data.bid) {
+        setHighestBid(data.bid);
+        setAllBids(prev => [data.bid, ...prev]);
+        setPreviousBid(data.previousBid || currentBid);
+      }
+      // Still refresh in background to be safe
       loadCurrentBid();
       loadAllBids();
     });
 
     newSocket.on('bid-updated', (data) => {
-      setPreviousBid(data.highestBid ? data.highestBid.amount : currentBid);
+      if (data.highestBid) {
+        setHighestBid(data.highestBid);
+        setPreviousBid(data.previousBid || currentBid);
+      } else {
+        setHighestBid(null);
+      }
       loadCurrentBid();
       loadAllBids();
     });
@@ -123,13 +152,11 @@ function AdminDashboard({ user }) {
     newSocket.on('bid-increments-changed', (data) => {
       setBidIncrements({
         increment1: data.increment1,
-        increment2: data.increment2,
-        increment3: data.increment3
+        increment2: data.increment2
       });
       setNewIncrements({
         increment1: data.increment1,
-        increment2: data.increment2,
-        increment3: data.increment3
+        increment2: data.increment2
       });
     });
 
@@ -208,7 +235,13 @@ function AdminDashboard({ user }) {
       alert('All players and bids have been cleared by an admin');
     });
 
-    return () => newSocket.close();
+    // Poll for updates every 2 seconds as backup
+    const interval = setInterval(loadData, 2000);
+
+    return () => {
+      newSocket.close();
+      clearInterval(interval);
+    };
   }, []);
 
   const loadData = async () => {
@@ -223,26 +256,33 @@ function AdminDashboard({ user }) {
   const loadAuctionState = async () => {
     try {
       const data = await adminService.getAuctionState();
-      setAuctionState(data);
-      setBidIncrements(data.bidIncrements);
-      setNewIncrements(data.bidIncrements);
+
+      if (JSON.stringify(data) !== JSON.stringify(auctionState)) {
+        setAuctionState(data);
+      }
+
+      if (JSON.stringify(data.bidIncrements) !== JSON.stringify(bidIncrements)) {
+        setBidIncrements(data.bidIncrements);
+        setNewIncrements(data.bidIncrements);
+      }
 
       // Load max players config
-      if (data.maxPlayersPerTeam) {
-        setMaxPlayersPerTeam(data.maxPlayersPerTeam);
-        setNewMaxPlayersPerTeam(data.maxPlayersPerTeam);
-      } else {
-        // Fallback to separate API if not in state response
-        const maxPlayersData = await adminService.getMaxPlayersPerTeam();
-        setMaxPlayersPerTeam(maxPlayersData.maxPlayersPerTeam);
-        setNewMaxPlayersPerTeam(maxPlayersData.maxPlayersPerTeam);
+      const maxPlayers = data.maxPlayersPerTeam || 10;
+      if (maxPlayers !== maxPlayersPerTeam) {
+        setMaxPlayersPerTeam(maxPlayers);
+        setNewMaxPlayersPerTeam(maxPlayers);
       }
 
       if (data.currentPlayerId) {
         const playerData = await adminService.getCurrentBid();
-        setCurrentPlayer(playerData.player);
+        if (JSON.stringify(playerData.player) !== JSON.stringify(currentPlayer)) {
+          setCurrentPlayer(playerData.player);
+        }
+      } else if (currentPlayer !== null) {
+        setCurrentPlayer(null);
       }
-      if (data.enforceMaxBid !== undefined) {
+
+      if (data.enforceMaxBid !== undefined && data.enforceMaxBid !== enforceMaxBid) {
         setEnforceMaxBid(data.enforceMaxBid);
       }
     } catch (error) {
@@ -253,8 +293,12 @@ function AdminDashboard({ user }) {
   const loadCurrentBid = async () => {
     try {
       const data = await adminService.getCurrentBid();
-      setHighestBid(data.highestBid);
-      setCurrentPlayer(data.player);
+      if (JSON.stringify(data.highestBid) !== JSON.stringify(highestBid)) {
+        setHighestBid(data.highestBid);
+      }
+      if (JSON.stringify(data.player) !== JSON.stringify(currentPlayer)) {
+        setCurrentPlayer(data.player);
+      }
     } catch (error) {
       console.error('Error loading current bid:', error);
     }
@@ -263,7 +307,9 @@ function AdminDashboard({ user }) {
   const loadAllBids = async () => {
     try {
       const data = await adminService.getAllBids();
-      setAllBids(data.bids || []);
+      if (JSON.stringify(data.bids) !== JSON.stringify(allBids)) {
+        setAllBids(data.bids || []);
+      }
     } catch (error) {
       console.error('Error loading bids:', error);
     }
@@ -272,7 +318,9 @@ function AdminDashboard({ user }) {
   const loadPlayers = async () => {
     try {
       const data = await adminService.getAllPlayers();
-      setPlayers(data.players || []);
+      if (JSON.stringify(data.players) !== JSON.stringify(players)) {
+        setPlayers(data.players || []);
+      }
     } catch (error) {
       console.error('Error loading players:', error);
     }
@@ -319,8 +367,7 @@ function AdminDashboard({ user }) {
     try {
       await adminService.updateBidIncrements(
         newIncrements.increment1,
-        newIncrements.increment2,
-        newIncrements.increment3
+        newIncrements.increment2
       );
       alert('Bid increments updated!');
     } catch (error) {
@@ -365,7 +412,9 @@ function AdminDashboard({ user }) {
   const loadTeams = async () => {
     try {
       const teamsData = await adminService.getAllTeams();
-      setTeams(teamsData);
+      if (JSON.stringify(teamsData) !== JSON.stringify(teams)) {
+        setTeams(teamsData);
+      }
     } catch (error) {
       console.error('Error loading teams:', error);
     }
@@ -743,16 +792,24 @@ function AdminDashboard({ user }) {
               <div className="w-6 h-0.5 bg-white"></div>
             </button>
             <div>
-              <h1 className="text-2xl font-bold text-white">Admin Dashboard (Live v1.1)</h1>
+              <h1 className="text-2xl font-bold text-white">Admin Dashboard</h1>
               <p className="text-gray-400 text-sm">Welcome, {user.username}</p>
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-          >
-            Logout
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setShowHistory(true)}
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
+            >
+              History
+            </button>
+            <button
+              onClick={handleLogout}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         {/* Sidebar Menu */}
@@ -803,6 +860,18 @@ function AdminDashboard({ user }) {
                   <div className="font-semibold">Team Purses</div>
                   <div className="text-sm text-green-200">Monitor all team remaining amounts</div>
                 </button>
+                <div className="pt-4 border-t border-gray-700 mt-4">
+                  <button
+                    onClick={() => {
+                      setShowCredentialsModal(true);
+                      setShowSidebar(false);
+                    }}
+                    className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-left"
+                  >
+                    <div className="font-semibold">🔑 Team Credentials</div>
+                    <div className="text-sm text-indigo-200">View & Edit logins</div>
+                  </button>
+                </div>
                 <button
                   onClick={() => {
                     setShowBiddingLogicModal(true);
@@ -813,6 +882,7 @@ function AdminDashboard({ user }) {
                   <div className="font-semibold">Bidding Logic</div>
                   <div className="text-sm text-yellow-100">Manage max bid constraints</div>
                 </button>
+
                 <div className="pt-4 border-t border-gray-700 mt-4">
                   <button
                     onClick={handleDeleteAllPlayers}
@@ -831,39 +901,39 @@ function AdminDashboard({ user }) {
           {/* Main Player Card */}
           <div className="lg:col-span-2 space-y-4">
             {/* Auction Status */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-lg p-4 border border-gray-700 shadow-lg">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-4">
-                  <div className={`px-4 py-2 rounded-lg font-semibold ${auctionState.status === 'LIVE' ? 'bg-green-600 text-white' :
-                    auctionState.status === 'PAUSED' ? 'bg-yellow-600 text-white' :
-                      'bg-gray-600 text-white'
+                  <div className={`px-4 py-2 rounded-lg font-semibold shadow-md ${auctionState.status === 'LIVE' ? 'bg-gradient-to-r from-green-600 to-green-700 text-white animate-pulse' :
+                    auctionState.status === 'PAUSED' ? 'bg-gradient-to-r from-yellow-600 to-yellow-700 text-white' :
+                      'bg-gradient-to-r from-gray-600 to-gray-700 text-white'
                     }`}>
-                    {auctionState.status}
+                    {auctionState.status === 'LIVE' && '🟢 '}{auctionState.status}
                   </div>
                   {auctionState.biddingLocked && (
-                    <div className="px-4 py-2 bg-red-600 text-white rounded-lg font-semibold">
-                      BIDDING LOCKED
+                    <div className="px-4 py-2 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-lg font-semibold shadow-md">
+                      🔒 BIDDING LOCKED
                     </div>
                   )}
                 </div>
                 <div className="flex gap-2">
                   <button
                     onClick={() => handleStatusChange('LIVE')}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                    className="px-4 py-2 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white rounded-lg transition-all shadow-md hover:shadow-lg transform hover:scale-105"
                   >
-                    START
+                    ▶ START
                   </button>
                   <button
                     onClick={() => handleStatusChange('PAUSED')}
-                    className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg transition-colors"
+                    className="px-4 py-2 bg-gradient-to-r from-yellow-600 to-yellow-700 hover:from-yellow-700 hover:to-yellow-800 text-white rounded-lg transition-all shadow-md hover:shadow-lg transform hover:scale-105"
                   >
-                    PAUSE
+                    ⏸ PAUSE
                   </button>
                   <button
                     onClick={() => handleStatusChange('STOPPED')}
-                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+                    className="px-4 py-2 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-lg transition-all shadow-md hover:shadow-lg transform hover:scale-105"
                   >
-                    STOP
+                    ⏹ STOP
                   </button>
                 </div>
               </div>
@@ -871,45 +941,47 @@ function AdminDashboard({ user }) {
 
             {/* Player Card */}
             {currentPlayer ? (
-              <div className={`bg-gray-800 rounded-lg p-6 border-2 ${currentPlayer.was_unsold ? 'border-orange-500 shadow-lg shadow-orange-500/50' : 'border-gray-700'
+              <div className={`bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-6 border-2 shadow-xl hover:shadow-2xl transition-shadow ${currentPlayer.was_unsold ? 'border-orange-500 shadow-orange-500/50' : 'border-gray-700'
                 }`}>
-                {currentPlayer.was_unsold && (
-                  <div className="mb-4 px-4 py-2 bg-orange-500 text-white rounded-lg font-bold text-center">
+                {!!currentPlayer.was_unsold && (
+                  <div className="mb-4 px-4 py-2 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-lg font-bold text-center shadow-md">
                     ⚠️ PREVIOUSLY UNSOLD - BACK IN AUCTION
                   </div>
                 )}
                 <div className="flex gap-6">
                   <div className="relative">
-                    <img
-                      src={getImageUrl(currentPlayer.image)}
-                      alt={currentPlayer.name}
-                      className="w-48 h-64 object-cover rounded-lg"
-                      onError={(e) => {
-                        e.target.src = 'https://via.placeholder.com/200x300?text=Player';
-                      }}
-                    />
+                    <div className="w-48 h-64 rounded-lg overflow-hidden shadow-lg ring-2 ring-gray-700">
+                      <img
+                        src={getImageUrl(currentPlayer.image)}
+                        alt={currentPlayer.name}
+                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-300"
+                        onError={(e) => {
+                          e.target.src = 'https://via.placeholder.com/200x300?text=Player';
+                        }}
+                      />
+                    </div>
                     {currentPlayer.serial_number && (
-                      <div className="absolute -top-3 -right-3 bg-yellow-400 text-blue-900 font-bold text-3xl px-6 py-2 rounded-full shadow-lg">
+                      <div className="absolute -top-3 -right-3 bg-gradient-to-br from-yellow-400 to-yellow-500 text-blue-900 font-bold text-3xl px-6 py-2 rounded-full shadow-xl ring-4 ring-blue-900/50">
                         {currentPlayer.serial_number}
                       </div>
                     )}
                   </div>
                   <div className="flex-1">
-                    <h2 className="text-3xl font-bold text-white mb-2">{currentPlayer.name}</h2>
-                    <div className="space-y-2 mb-4">
-                      <p className="text-gray-300"><span className="font-semibold">Role:</span> {currentPlayer.role}</p>
-                      <p className="text-gray-300"><span className="font-semibold">Country:</span> {currentPlayer.country || 'N/A'}</p>
-                      <p className="text-gray-300"><span className="font-semibold">Base Price:</span> ₹{currentPlayer.base_price?.toLocaleString()}</p>
-                      <p className="text-gray-300"><span className="font-semibold">Status:</span> {currentPlayer.status}</p>
+                    <h2 className="text-4xl font-bold text-white mb-4 bg-gradient-to-r from-blue-400 to-green-400 bg-clip-text text-transparent">{currentPlayer.name}</h2>
+                    <div className="space-y-3 mb-4">
+                      <p className="text-gray-200 text-lg"><span className="font-semibold text-blue-400">🏏 Role:</span> {currentPlayer.role}</p>
+                      <p className="text-gray-200 text-lg"><span className="font-semibold text-blue-400">🌍 Country:</span> {currentPlayer.country || 'N/A'}</p>
+                      <p className="text-gray-200 text-lg"><span className="font-semibold text-blue-400">💰 Base Price:</span> ₹{currentPlayer.base_price?.toLocaleString()}</p>
+                      <p className="text-gray-200 text-lg"><span className="font-semibold text-blue-400">📊 Status:</span> <span className="px-2 py-1 bg-blue-600/30 rounded">{currentPlayer.status}</span></p>
                     </div>
                   </div>
                 </div>
 
                 {/* Current Bid Display */}
-                <div className="mt-6 p-4 bg-gray-900 rounded-lg border border-gray-700">
+                <div className="mt-6 p-6 bg-gradient-to-br from-green-900/30 to-blue-900/30 rounded-xl border-2 border-green-500/30 shadow-lg">
                   <div className="text-center">
-                    <p className="text-gray-400 text-sm mb-2">Current Bid</p>
-                    <p className="text-4xl font-bold text-green-400 mb-2">₹{currentBid.toLocaleString()}</p>
+                    <p className="text-gray-400 text-sm mb-2 uppercase tracking-wider">Current Bid</p>
+                    <p className="text-5xl font-bold text-green-400 mb-3 animate-pulse">₹{currentBid.toLocaleString()}</p>
                     {highestBid && (
                       <p className="text-xl text-white">
                         Leading: <span className="font-semibold text-green-400">{highestBid.team_name}</span>
@@ -919,56 +991,60 @@ function AdminDashboard({ user }) {
                 </div>
 
                 {/* Player Actions */}
-                <div className="mt-4 flex flex-wrap gap-2">
+                <div className="mt-6 flex flex-wrap gap-3">
                   <button
                     onClick={() => handleMarkPlayer('SOLD')}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                    className="px-5 py-3 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105"
                   >
-                    Mark as SOLD
+                    ✓ Mark as SOLD
                   </button>
                   <button
                     onClick={() => handleMarkPlayer('UNSOLD')}
-                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
+                    className="px-5 py-3 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105"
                   >
-                    Mark as UNSOLD
+                    ✗ Mark as UNSOLD
                   </button>
-                  {currentPlayer.was_unsold && (
+                  {!!currentPlayer.was_unsold && (
                     <button
                       onClick={() => handleResetUnsoldTag(currentPlayer.id)}
-                      className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
+                      className="px-5 py-3 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105"
                       title="Reset unsold tag"
                     >
-                      Reset Unsold Tag
+                      ↺ Reset Unsold Tag
                     </button>
                   )}
                   <button
                     onClick={handleResetBidding}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                    className="px-5 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105"
                   >
-                    Reset Bidding
+                    🔄 Reset Bidding
                   </button>
                   <button
                     onClick={handleUndoBid}
-                    className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors"
+                    className="px-5 py-3 bg-gradient-to-r from-orange-600 to-orange-700 hover:from-orange-700 hover:to-orange-800 text-white rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105"
                   >
-                    Undo Last Bid
+                    ← Undo Last Bid
                   </button>
                 </div>
               </div>
             ) : (
-              <div className="bg-gray-800 rounded-lg p-6 border border-gray-700 text-center text-gray-400">
-                No player loaded
+              <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl p-8 border-2 border-dashed border-gray-600 text-center shadow-lg">
+                <div className="text-gray-400 text-lg">🎭 No player loaded</div>
+                <p className="text-gray-500 text-sm mt-2">Select a player from below to start the auction</p>
               </div>
             )}
 
             {/* Load Player */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h3 className="text-white font-semibold mb-3">Load Player</h3>
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-lg p-4 border border-gray-700 shadow-lg">
+              <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+                <span className="text-xl">🎯</span>
+                Load Player
+              </h3>
               <div className="flex gap-2">
                 <select
                   value={selectedPlayerId}
                   onChange={(e) => setSelectedPlayerId(e.target.value)}
-                  className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                  className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                 >
                   <option value="">Select a player</option>
                   {players.filter(p => p.status === 'AVAILABLE' || p.status === 'UNSOLD').map(player => (
@@ -979,9 +1055,9 @@ function AdminDashboard({ user }) {
                 </select>
                 <button
                   onClick={handleLoadPlayer}
-                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                  className="px-6 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105"
                 >
-                  Load
+                  ▶ Load
                 </button>
               </div>
             </div>
@@ -989,567 +1065,546 @@ function AdminDashboard({ user }) {
 
           {/* Sidebar */}
           <div className="space-y-4">
-            {/* Bid Increments */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h3 className="text-white font-semibold mb-3">Bid Increments</h3>
-              <div className="space-y-2 mb-3">
-                <input
-                  type="number"
-                  value={newIncrements.increment1}
-                  onChange={(e) => setNewIncrements({ ...newIncrements, increment1: parseInt(e.target.value) })}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                  placeholder="Increment 1"
-                />
-                <input
-                  type="number"
-                  value={newIncrements.increment2}
-                  onChange={(e) => setNewIncrements({ ...newIncrements, increment2: parseInt(e.target.value) })}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                  placeholder="Increment 2"
-                />
-                <input
-                  type="number"
-                  value={newIncrements.increment3}
-                  onChange={(e) => setNewIncrements({ ...newIncrements, increment3: parseInt(e.target.value) })}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                  placeholder="Increment 3"
-                />
-              </div>
+            {/* Bidding Control - Most frequently used */}
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-lg p-4 border border-gray-700 shadow-lg hover:shadow-xl transition-shadow">
+              <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+                <span className="text-xl">🔒</span>
+                Bidding Control
+              </h3>
               <button
-                onClick={handleUpdateIncrements}
-                className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                onClick={() => handleLockBidding(!auctionState.biddingLocked)}
+                className={`w-full px-4 py-3 rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105 ${auctionState.biddingLocked
+                  ? 'bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white'
+                  : 'bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white'
+                  }`}
               >
-                Update Increments
+                {auctionState.biddingLocked ? '🔓 Unlock Bidding' : '🔒 Lock Bidding'}
               </button>
-              <div className="mt-2 text-sm text-gray-400">
-                Current: ₹{bidIncrements.increment1} / ₹{bidIncrements.increment2} / ₹{bidIncrements.increment3}
+              <p className="mt-2 text-xs text-gray-400 text-center">
+                {auctionState.biddingLocked ? 'All teams are blocked from bidding' : 'All teams can place bids'}
+              </p>
+            </div>
+
+            {/* All Bids - Frequently referenced */}
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-lg p-4 border border-gray-700 shadow-lg hover:shadow-xl transition-shadow">
+              <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+                <span className="text-xl">💰</span>
+                All Bids
+              </h3>
+              <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
+                {allBids.length > 0 ? (
+                  allBids.map((bid, index) => (
+                    <div key={bid.id} className="p-3 bg-gray-700/60 rounded-lg hover:bg-gray-700 transition-colors border border-gray-600">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-white font-semibold text-sm truncate">{bid.team_name}</div>
+                          <div className="text-xs text-gray-400">{new Date(bid.timestamp).toLocaleTimeString()}</div>
+                        </div>
+                        <div className="text-green-400 font-bold text-lg ml-2">₹{bid.amount.toLocaleString()}</div>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-gray-400 text-sm text-center py-8">
+                    No bids yet
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Team Size Configuration */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h3 className="text-white font-semibold mb-3">Team Size Limit</h3>
-              <div className="space-y-2 mb-3">
+            {/* Team Size Configuration - Less frequently changed */}
+            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-lg p-4 border border-gray-700 shadow-lg hover:shadow-xl transition-shadow">
+              <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
+                <span className="text-xl">👥</span>
+                Team Size Limit
+              </h3>
+              <div className="space-y-3">
                 <input
                   type="number"
                   value={newMaxPlayersPerTeam}
                   onChange={(e) => setNewMaxPlayersPerTeam(e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                   placeholder="Max players per team"
                   min="1"
                   max="50"
                 />
-              </div>
-              <button
-                onClick={handleUpdateMaxPlayers}
-                className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
-              >
-                Update Team Size
-              </button>
-              <div className="mt-2 text-sm text-gray-400">
-                Current Limit: {maxPlayersPerTeam} Players
-              </div>
-            </div>
-
-            {/* Lock Bidding */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h3 className="text-white font-semibold mb-3">Bidding Control</h3>
-              <button
-                onClick={() => handleLockBidding(!auctionState.biddingLocked)}
-                className={`w-full px-4 py-2 rounded-lg transition-colors ${auctionState.biddingLocked
-                  ? 'bg-green-600 hover:bg-green-700 text-white'
-                  : 'bg-red-600 hover:bg-red-700 text-white'
-                  }`}
-              >
-                {auctionState.biddingLocked ? 'Unlock Bidding' : 'Lock Bidding'}
-              </button>
-            </div>
-
-            {/* All Bids */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h3 className="text-white font-semibold mb-3">All Bids</h3>
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                {allBids.length > 0 ? (
-                  allBids.map((bid, index) => (
-                    <div key={bid.id} className="p-2 bg-gray-700 rounded text-sm">
-                      <div className="text-white font-semibold">{bid.team_name}</div>
-                      <div className="text-green-400">₹{bid.amount.toLocaleString()}</div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-gray-400 text-sm">No bids yet</p>
-                )}
-              </div>
-            </div>
-
-            {/* History */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <button
-                onClick={loadHistory}
-                className="w-full px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
-              >
-                View Auction History
-              </button>
-            </div>
-
-            {/* Player Management */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h3 className="text-white font-semibold mb-3">Player Management</h3>
-              <button
-                onClick={handleAddPlayer}
-                className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors mb-2"
-              >
-                Add New Player
-              </button>
-              <div className="space-y-2 max-h-64 overflow-y-auto overflow-x-hidden" style={{ scrollbarWidth: 'thin' }}>
-                {players.length > 0 ? (
-                  players.map((player) => (
-                    <div key={player.id} className="p-2 bg-gray-700 rounded text-sm flex justify-between items-center min-w-0">
-                      <div className="flex-1 min-w-0 mr-2">
-                        <div className="text-white font-semibold truncate">
-                          {player.was_unsold ? '⚠️ ' : ''}{player.name}
-                        </div>
-                        <div className="text-gray-400 text-xs">{player.role} • ₹{player.base_price?.toLocaleString()}</div>
-                      </div>
-                      <div className="flex gap-1 flex-shrink-0">
-                        {player.was_unsold && (
-                          <button
-                            onClick={() => handleResetUnsoldTag(player.id)}
-                            className="px-2 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs whitespace-nowrap"
-                            title="Reset unsold tag"
-                          >
-                            Reset Tag
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleEditPlayer(player)}
-                          className="px-2 py-1 bg-yellow-600 hover:bg-yellow-700 text-white rounded text-xs whitespace-nowrap"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDeletePlayer(player.id)}
-                          className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs whitespace-nowrap"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-gray-400 text-sm text-center py-2">No players yet</p>
-                )}
-              </div>
-            </div>
-
-            {/* Team Budget Management */}
-            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-              <h3 className="text-white font-semibold mb-3">Team Budget Management</h3>
-              <div className="space-y-3">
-                {teams.length > 0 ? (
-                  teams.map((team) => (
-                    <div key={team.id} className="bg-gray-700 rounded-lg p-3 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <div className="text-white font-semibold">{team.name}</div>
-                            {team.bidding_locked && (
-                              <span className="px-2 py-0.5 bg-red-600 text-white text-xs rounded font-semibold">
-                                🔒 LOCKED
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-gray-400 text-sm">Current Budget: ₹{team.budget?.toLocaleString() || '0'}</div>
-                        </div>
-                      </div>
-                      <div className="flex gap-2 flex-wrap">
-                        {editingTeamBudget === team.id ? (
-                          <>
-                            <input
-                              type="number"
-                              value={newBudget}
-                              onChange={(e) => setNewBudget(e.target.value)}
-                              className="px-3 py-2 bg-gray-600 border border-gray-500 rounded text-white w-32"
-                              placeholder="New budget"
-                              min="0"
-                              step="1000"
-                            />
-                            <button
-                              onClick={() => handleUpdateTeamBudget(team.id)}
-                              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded transition-colors text-sm"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={() => {
-                                setEditingTeamBudget(null);
-                                setNewBudget('');
-                              }}
-                              className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded transition-colors text-sm"
-                            >
-                              Cancel
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              onClick={() => {
-                                setEditingTeamBudget(team.id);
-                                setNewBudget(team.budget?.toString() || '0');
-                              }}
-                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors text-sm"
-                            >
-                              Edit Budget
-                            </button>
-                            <button
-                              onClick={() => handleLockTeamBidding(team.id, !team.bidding_locked)}
-                              className={`px-3 py-1.5 rounded transition-colors text-sm ${team.bidding_locked
-                                ? 'bg-green-600 hover:bg-green-700 text-white'
-                                : 'bg-red-600 hover:bg-red-700 text-white'
-                                }`}
-                            >
-                              {team.bidding_locked ? '🔓 Unlock Bidding' : '🔒 Lock Bidding'}
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-gray-400 text-sm text-center py-2">Loading teams...</p>
-                )}
+                <button
+                  onClick={handleUpdateMaxPlayers}
+                  className="w-full px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg transition-all font-semibold shadow-md hover:shadow-lg transform hover:scale-105"
+                >
+                  Update Team Size
+                </button>
+                <div className="text-sm text-gray-400 text-center bg-gray-700/30 py-2 rounded">
+                  Current: <span className="text-blue-400 font-semibold">{maxPlayersPerTeam} Players</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* History Modal */}
-        {showHistory && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-gray-800 rounded-lg p-6 max-w-4xl w-full max-h-[80vh] overflow-y-auto border border-gray-700">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">Auction History</h2>
-                <button
-                  onClick={() => setShowHistory(false)}
-                  className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg"
-                >
-                  Close
-                </button>
-              </div>
-              <div className="space-y-2">
-                {history.map((item) => (
-                  <div key={item.id} className="p-3 bg-gray-700 rounded">
-                    <div className="flex justify-between">
-                      <span className="text-white font-semibold">{item.player_name}</span>
-                      <span className="text-green-400">₹{item.amount.toLocaleString()}</span>
-                    </div>
-                    <div className="text-gray-400 text-sm">{item.team_name} • {new Date(item.timestamp).toLocaleString()}</div>
-                  </div>
-                ))}
-              </div>
+        {/* Player Management */}
+        <div className="bg-gray-800 rounded-lg p-4 border border-gray-700 mt-4">
+          <h3 className="text-white font-semibold mb-3">Player Management</h3>
+
+          {/* Search and Filters */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+            <input
+              type="text"
+              placeholder="Search players..."
+              value={playerSearch}
+              onChange={(e) => setPlayerSearch(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="flex gap-2">
+              <select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+                className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+              >
+                <option value="All">All Roles</option>
+                <option value="Batsman">Batsman</option>
+                <option value="Bowler">Bowler</option>
+                <option value="All-Rounder">All-Rounder</option>
+                <option value="WK">WK</option>
+              </select>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+              >
+                <option value="All">All Status</option>
+                <option value="Available">Available</option>
+                <option value="Sold">Sold</option>
+                <option value="Unsold">Unsold</option>
+              </select>
             </div>
           </div>
-        )}
 
-        {/* Player Add/Edit Modal */}
-        {showPlayerModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full border border-gray-700">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">
-                  {editingPlayer ? 'Edit Player' : 'Add New Player'}
-                </h2>
-                <button
-                  onClick={() => {
-                    setShowPlayerModal(false);
-                    // Reset form after a delay to allow modal to close
-                    setTimeout(() => {
-                      setImageFile(null);
-                      setImagePreview(null);
-                    }, 300);
-                  }}
-                  className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg"
-                >
-                  Close
-                </button>
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Name *</label>
-                  <input
-                    type="text"
-                    value={playerForm.name}
-                    onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                    placeholder="Player name"
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Serial Number</label>
-                  <input
-                    type="number"
-                    value={playerForm.serial_number}
-                    onChange={(e) => setPlayerForm({ ...playerForm, serial_number: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                    placeholder="Auto-adjusts other numbers"
-                    min="1"
-                  />
-                  <p className="text-gray-400 text-xs mt-1">If a number is inserted, others will adjust automatically</p>
-                </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Player Image</label>
+          <button
+            onClick={handleAddPlayer}
+            className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors mb-3 font-semibold text-sm"
+          >
+            + Add New Player
+          </button>
 
-                  {/* Image Preview */}
-                  {imagePreview && (
-                    <div className="mb-3">
-                      <img
-                        src={imagePreview}
-                        alt="Preview"
-                        className="w-32 h-32 object-cover rounded-lg border border-gray-600"
-                      />
-                    </div>
-                  )}
-
-                  {/* File Upload */}
-                  <div className="mb-3">
-                    <label className="block text-gray-300 text-xs mb-1">Upload from PC:</label>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageChange}
-                      className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"
-                    />
-                  </div>
-
-                  {/* URL Input (Alternative) */}
-                  <div>
-                    <label className="block text-gray-300 text-xs mb-1">Or enter Image URL:</label>
-                    <input
-                      type="text"
-                      value={playerForm.image}
-                      onChange={(e) => {
-                        setPlayerForm({ ...playerForm, image: e.target.value });
-                        if (e.target.value) {
-                          setImagePreview(e.target.value);
-                        }
-                      }}
-                      className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                      placeholder="https://example.com/image.jpg"
-                    />
-                  </div>
-
-                  {uploadingImage && (
-                    <p className="text-yellow-400 text-xs mt-2">Uploading image...</p>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Role *</label>
-                  <select
-                    value={playerForm.role}
-                    onChange={(e) => setPlayerForm({ ...playerForm, role: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                  >
-                    <option value="Batsman">Batsman</option>
-                    <option value="Bowler">Bowler</option>
-                    <option value="All-Rounder">All-Rounder</option>
-                    <option value="WK">WK (Wicket-Keeper)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Country</label>
-                  <input
-                    type="text"
-                    value={playerForm.country}
-                    onChange={(e) => setPlayerForm({ ...playerForm, country: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                    placeholder="Country"
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Base Price (₹) *</label>
-                  <input
-                    type="number"
-                    value={playerForm.base_price}
-                    onChange={(e) => setPlayerForm({ ...playerForm, base_price: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                    placeholder="1000000"
-                    min="0"
-                    step="1000"
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleSavePlayer}
-                    className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
-                  >
-                    {editingPlayer ? 'Update Player' : 'Add Player'}
-                  </button>
-                  <button
-                    onClick={() => setShowPlayerModal(false)}
-                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Team Management Modal */}
-        {showTeamManagement && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-            <div className="bg-gray-800 rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto border-2 border-blue-500">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">Team Management</h2>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleAddTeam}
-                    className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
-                  >
-                    + Add Team
-                  </button>
-                  <button
-                    onClick={() => setShowTeamManagement(false)}
-                    className="text-white hover:text-gray-400 text-2xl font-bold"
-                  >
-                    ×
-                  </button>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {teams.map((team) => (
-                  <div key={team.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
-                    <div className="flex items-center gap-3 mb-3">
-                      {team.logo ? (
-                        <img
-                          src={getImageUrl(team.logo)}
-                          alt={team.name}
-                          className="w-12 h-12 object-cover rounded-full"
-                          onError={(e) => {
-                            e.target.src = 'https://via.placeholder.com/48?text=Team';
-                          }}
-                        />
-                      ) : (
-                        <div className="w-12 h-12 bg-gray-600 rounded-full flex items-center justify-center text-white font-bold">
-                          {team.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-white font-semibold truncate">{team.name}</div>
-                        {team.owner_name && (
-                          <div className="text-gray-400 text-sm truncate">Owner: {team.owner_name}</div>
-                        )}
+          <div className="space-y-2 max-h-[400px] overflow-y-auto overflow-x-hidden custom-scrollbar pr-1">
+            {players.filter(player => {
+              const matchesSearch = player.name.toLowerCase().includes(playerSearch.toLowerCase());
+              const matchesRole = roleFilter === 'All' || player.role === roleFilter;
+              const matchesStatus = statusFilter === 'All' ||
+                (statusFilter === 'Sold' && player.status === 'SOLD') ||
+                (statusFilter === 'Unsold' && player.status === 'UNSOLD') ||
+                (statusFilter === 'Available' && (player.status === 'AVAILABLE' || !player.status));
+              return matchesSearch && matchesRole && matchesStatus;
+            }).length > 0 ? (
+              players
+                .filter(player => {
+                  const matchesSearch = player.name.toLowerCase().includes(playerSearch.toLowerCase());
+                  const matchesRole = roleFilter === 'All' || player.role === roleFilter;
+                  const matchesStatus = statusFilter === 'All' ||
+                    (statusFilter === 'Sold' && player.status === 'SOLD') ||
+                    (statusFilter === 'Unsold' && player.status === 'UNSOLD') ||
+                    (statusFilter === 'Available' && (player.status === 'AVAILABLE' || !player.status));
+                  return matchesSearch && matchesRole && matchesStatus;
+                })
+                .map((player) => (
+                  <div key={player.id} className="p-3 bg-gray-700/50 hover:bg-gray-700 rounded-lg text-sm flex justify-between items-center min-w-0 border border-gray-600/50 transition-colors">
+                    <div className="flex-1 min-w-0 mr-3">
+                      <div className="text-white font-semibold truncate flex items-center gap-2">
+                        {!!player.was_unsold && <span title="Previously Unsold">⚠️</span>}
+                        {player.name}
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${player.status === 'SOLD' ? 'bg-green-900 text-green-300' :
+                          player.status === 'UNSOLD' ? 'bg-red-900 text-red-300' :
+                            'bg-blue-900 text-blue-300'
+                          }`}>
+                          {player.status || 'AVAIL'}
+                        </span>
                       </div>
+                      <div className="text-gray-400 text-xs mt-0.5">{player.role} • ₹{player.base_price?.toLocaleString()}</div>
                     </div>
-                    <div className="text-yellow-400 text-sm mb-3">
-                      Budget: ₹{team.budget?.toLocaleString() || '0'}
-                    </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-shrink-0">
+                      {!!player.was_unsold && (
+                        <button
+                          onClick={() => handleResetUnsoldTag(player.id)}
+                          className="px-2 py-1.5 bg-purple-600/80 hover:bg-purple-600 text-white rounded text-xs whitespace-nowrap transition-colors"
+                          title="Reset unsold tag"
+                        >
+                          Reset
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleEditTeam(team)}
-                        className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors text-sm"
+                        onClick={() => handleEditPlayer(player)}
+                        className="px-2 py-1.5 bg-yellow-600/80 hover:bg-yellow-600 text-white rounded text-xs whitespace-nowrap transition-colors"
                       >
                         Edit
                       </button>
                       <button
-                        onClick={() => handleDeleteTeam(team.id)}
-                        className="flex-1 px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded transition-colors text-sm"
+                        onClick={() => handleDeletePlayer(player.id)}
+                        className="px-2 py-1.5 bg-red-600/80 hover:bg-red-600 text-white rounded text-xs whitespace-nowrap transition-colors"
                       >
                         Delete
                       </button>
                     </div>
                   </div>
-                ))}
-                {teams.length === 0 && (
-                  <div className="col-span-full text-center text-gray-400 py-8">
-                    No teams found. Click "Add Team" to create one.
+                ))
+            ) : (
+              <p className="text-gray-400 text-sm text-center py-8">
+                {players.length === 0 ? "No players added yet" : "No players match filters"}
+              </p>
+            )}
+          </div>
+        </div >
+
+        {/* Team Budget Management */}
+        < div className="bg-gray-800 rounded-lg p-4 border border-gray-700" >
+          <h3 className="text-white font-semibold mb-3">Team Budget Management</h3>
+          <div className="space-y-3">
+            {teams.length > 0 ? (
+              teams.map((team) => (
+                <div key={team.id} className="bg-gray-700 rounded-lg p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <div className="text-white font-semibold">{team.name}</div>
+                        {team.bidding_locked && (
+                          <span className="px-2 py-0.5 bg-red-600 text-white text-xs rounded font-semibold">
+                            🔒 LOCKED
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-gray-400 text-sm">Current Budget: ₹{team.budget?.toLocaleString() || '0'}</div>
+                    </div>
                   </div>
-                )}
+                  <div className="flex gap-2 flex-wrap">
+                    {editingTeamBudget === team.id ? (
+                      <>
+                        <input
+                          type="number"
+                          value={newBudget}
+                          onChange={(e) => setNewBudget(e.target.value)}
+                          className="px-3 py-2 bg-gray-600 border border-gray-500 rounded text-white w-32"
+                          placeholder="New budget"
+                          min="0"
+                          step="1000"
+                        />
+                        <button
+                          onClick={() => handleUpdateTeamBudget(team.id)}
+                          className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded transition-colors text-sm"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingTeamBudget(null);
+                            setNewBudget('');
+                          }}
+                          className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded transition-colors text-sm"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => {
+                            setEditingTeamBudget(team.id);
+                            setNewBudget(team.budget?.toString() || '0');
+                          }}
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors text-sm"
+                        >
+                          Edit Budget
+                        </button>
+                        <button
+                          onClick={() => handleLockTeamBidding(team.id, !team.bidding_locked)}
+                          className={`px-3 py-1.5 rounded transition-colors text-sm ${team.bidding_locked
+                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                            : 'bg-red-600 hover:bg-red-700 text-white'
+                            }`}
+                        >
+                          {team.bidding_locked ? '🔓 Unlock Bidding' : '🔒 Lock Bidding'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-gray-400 text-sm text-center py-2">Loading teams...</p>
+            )}
+          </div>
+        </div >
+
+        {/* History Modal */}
+        {
+          showHistory && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-gray-800 rounded-lg max-w-4xl w-full max-h-[80vh] flex flex-col border border-gray-700">
+                <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                  <h2 className="text-2xl font-bold text-white">Auction History</h2>
+                  <button
+                    onClick={() => setShowHistory(false)}
+                    className="text-white hover:text-gray-400 text-2xl font-bold px-2"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                  <div className="space-y-2">
+                    {history.map((item) => (
+                      <div key={item.id} className="p-3 bg-gray-700 rounded">
+                        <div className="flex justify-between">
+                          <span className="text-white font-semibold">{item.player_name}</span>
+                          <span className="text-green-400">₹{item.amount.toLocaleString()}</span>
+                        </div>
+                        <div className="text-gray-400 text-sm">{item.team_name} • {new Date(item.timestamp).toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )
+        }
 
-        {/* Add/Edit Team Modal */}
-        {showTeamModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-            <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full border-2 border-blue-500">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">
-                  {editingTeam ? 'Edit Team' : 'Add New Team'}
-                </h2>
-                <button
-                  onClick={() => {
-                    setShowTeamModal(false);
-                    setEditingTeam(null);
-                    setTeamForm({ name: '', owner_name: '', budget: '', logo: null });
-                    setTeamLogoPreview(null);
-                  }}
-                  className="text-white hover:text-gray-400 text-2xl font-bold"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Team Name *</label>
-                  <input
-                    type="text"
-                    value={teamForm.name}
-                    onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                    placeholder="Team name"
-                  />
+        {/* Player Add/Edit Modal */}
+        {
+          showPlayerModal && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-gray-800 rounded-lg max-w-md w-full max-h-[90vh] flex flex-col border border-gray-700">
+                <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                  <h2 className="text-2xl font-bold text-white">
+                    {editingPlayer ? 'Edit Player' : 'Add New Player'}
+                  </h2>
+                  <button
+                    onClick={() => {
+                      setShowPlayerModal(false);
+                      // Reset form after a delay to allow modal to close
+                      setTimeout(() => {
+                        setImageFile(null);
+                        setImagePreview(null);
+                      }, 300);
+                    }}
+                    className="text-white hover:text-gray-400 text-2xl font-bold px-2"
+                  >
+                    ×
+                  </button>
                 </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Owner Name <span className="text-gray-500 text-xs">(Optional)</span></label>
-                  <input
-                    type="text"
-                    value={teamForm.owner_name}
-                    onChange={(e) => setTeamForm({ ...teamForm, owner_name: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                    placeholder="Owner name (optional)"
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Budget (₹) <span className="text-gray-500 text-xs">(Optional)</span></label>
-                  <input
-                    type="number"
-                    value={teamForm.budget}
-                    onChange={(e) => setTeamForm({ ...teamForm, budget: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
-                    placeholder="1000000 (default)"
-                    min="0"
-                    step="1000"
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-300 text-sm font-medium mb-2">Team Logo <span className="text-gray-500 text-xs">(Optional)</span></label>
-                  {teamLogoPreview && (
-                    <div className="mb-3">
-                      <img
-                        src={teamLogoPreview}
-                        alt="Logo preview"
-                        className="w-24 h-24 object-cover rounded-lg border border-gray-600"
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Name *</label>
+                      <input
+                        type="text"
+                        value={playerForm.name}
+                        onChange={(e) => setPlayerForm({ ...playerForm, name: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                        placeholder="Player name"
                       />
                     </div>
-                  )}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleTeamLogoChange}
-                    className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                  />
-                  <p className="text-gray-400 text-xs mt-1">Max size: 5MB</p>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Serial Number</label>
+                      <input
+                        type="number"
+                        value={playerForm.serial_number}
+                        onChange={(e) => setPlayerForm({ ...playerForm, serial_number: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                        placeholder="Auto-adjusts other numbers"
+                        min="1"
+                      />
+                      <p className="text-gray-400 text-xs mt-1">If a number is inserted, others will adjust automatically</p>
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Player Image</label>
+
+                      {/* Image Preview */}
+                      {imagePreview && (
+                        <div className="mb-3">
+                          <img
+                            src={imagePreview}
+                            alt="Preview"
+                            className="w-32 h-32 object-cover rounded-lg border border-gray-600"
+                          />
+                        </div>
+                      )}
+
+                      {/* File Upload */}
+                      <div className="mb-3">
+                        <label className="block text-gray-300 text-xs mb-1">Upload from PC:</label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleImageChange}
+                          className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"
+                        />
+                      </div>
+
+                      {/* URL Input (Alternative) */}
+                      <div>
+                        <label className="block text-gray-300 text-xs mb-1">Or enter Image URL:</label>
+                        <input
+                          type="text"
+                          value={playerForm.image}
+                          onChange={(e) => {
+                            setPlayerForm({ ...playerForm, image: e.target.value });
+                            if (e.target.value) {
+                              setImagePreview(e.target.value);
+                            }
+                          }}
+                          className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                          placeholder="https://example.com/image.jpg"
+                        />
+                      </div>
+
+                      {uploadingImage && (
+                        <p className="text-yellow-400 text-xs mt-2">Uploading image...</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Role *</label>
+                      <select
+                        value={playerForm.role}
+                        onChange={(e) => setPlayerForm({ ...playerForm, role: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                      >
+                        <option value="Batsman">Batsman</option>
+                        <option value="Bowler">Bowler</option>
+                        <option value="All-Rounder">All-Rounder</option>
+                        <option value="WK">WK (Wicket-Keeper)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Country</label>
+                      <input
+                        type="text"
+                        value={playerForm.country}
+                        onChange={(e) => setPlayerForm({ ...playerForm, country: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                        placeholder="Country"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Base Price (₹) *</label>
+                      <input
+                        type="number"
+                        value={playerForm.base_price}
+                        onChange={(e) => setPlayerForm({ ...playerForm, base_price: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                        placeholder="1000000"
+                        min="0"
+                        step="1000"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleSavePlayer}
+                        className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                      >
+                        {editingPlayer ? 'Update Player' : 'Add Player'}
+                      </button>
+                      <button
+                        onClick={() => setShowPlayerModal(false)}
+                        className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleSaveTeam}
-                    className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
-                  >
-                    {editingTeam ? 'Update Team' : 'Add Team'}
-                  </button>
+              </div>
+            </div>
+          )
+        }
+
+        {/* Team Management Modal */}
+        {
+          showTeamManagement && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+              <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] flex flex-col border-2 border-blue-500">
+                <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                  <h2 className="text-2xl font-bold text-white">Team Management</h2>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleAddTeam}
+                      className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                    >
+                      + Add Team
+                    </button>
+                    <button
+                      onClick={() => setShowTeamManagement(false)}
+                      className="text-white hover:text-gray-400 text-2xl font-bold px-2"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {teams.map((team) => (
+                      <div key={team.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
+                        <div className="flex items-center gap-3 mb-3">
+                          {team.logo ? (
+                            <img
+                              src={getImageUrl(team.logo)}
+                              alt={team.name}
+                              className="w-12 h-12 object-cover rounded-full"
+                              onError={(e) => {
+                                e.target.src = 'https://via.placeholder.com/48?text=Team';
+                              }}
+                            />
+                          ) : (
+                            <div className="w-12 h-12 bg-gray-600 rounded-full flex items-center justify-center text-white font-bold">
+                              {team.name.charAt(0)}
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-white font-semibold truncate">{team.name}</div>
+                            {team.owner_name && (
+                              <div className="text-gray-400 text-sm truncate">Owner: {team.owner_name}</div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-yellow-400 text-sm mb-3">
+                          Budget: ₹{team.budget?.toLocaleString() || '0'}
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleEditTeam(team)}
+                            className="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors text-sm"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDeleteTeam(team.id)}
+                            className="flex-1 px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded transition-colors text-sm"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {teams.length === 0 && (
+                      <div className="col-span-full text-center text-gray-400 py-8">
+                        No teams found. Click "Add Team" to create one.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )
+        }
+
+
+        {/* Add/Edit Team Modal */}
+        {
+          showTeamModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+              <div className="bg-gray-800 rounded-xl max-w-md w-full max-h-[90vh] flex flex-col border-2 border-blue-500">
+                <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                  <h2 className="text-2xl font-bold text-white">
+                    {editingTeam ? 'Edit Team' : 'Add New Team'}
+                  </h2>
                   <button
                     onClick={() => {
                       setShowTeamModal(false);
@@ -1557,193 +1612,474 @@ function AdminDashboard({ user }) {
                       setTeamForm({ name: '', owner_name: '', budget: '', logo: null });
                       setTeamLogoPreview(null);
                     }}
-                    className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
+                    className="text-white hover:text-gray-400 text-2xl font-bold px-2"
                   >
-                    Cancel
+                    ×
                   </button>
                 </div>
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Team Name *</label>
+                      <input
+                        type="text"
+                        value={teamForm.name}
+                        onChange={(e) => setTeamForm({ ...teamForm, name: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                        placeholder="Team name"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Owner Name <span className="text-gray-500 text-xs">(Optional)</span></label>
+                      <input
+                        type="text"
+                        value={teamForm.owner_name}
+                        onChange={(e) => setTeamForm({ ...teamForm, owner_name: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                        placeholder="Owner name (optional)"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Budget (₹) <span className="text-gray-500 text-xs">(Optional)</span></label>
+                      <input
+                        type="number"
+                        value={teamForm.budget}
+                        onChange={(e) => setTeamForm({ ...teamForm, budget: e.target.value })}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                        placeholder="1000000 (default)"
+                        min="0"
+                        step="1000"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 text-sm font-medium mb-2">Team Logo <span className="text-gray-500 text-xs">(Optional)</span></label>
+                      {teamLogoPreview && (
+                        <div className="mb-3">
+                          <img
+                            src={teamLogoPreview}
+                            alt="Logo preview"
+                            className="w-24 h-24 object-cover rounded-lg border border-gray-600"
+                          />
+                        </div>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleTeamLogoChange}
+                        className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                      />
+                      <p className="text-gray-400 text-xs mt-1">Max size: 5MB</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleSaveTeam}
+                        className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                      >
+                        {editingTeam ? 'Update Team' : 'Add Team'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowTeamModal(false);
+                          setEditingTeam(null);
+                          setTeamForm({ name: '', owner_name: '', budget: '', logo: null });
+                          setTeamLogoPreview(null);
+                        }}
+                        className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )
+        }
 
         {/* Team Squads Modal */}
-        {showTeamSquads && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-            <div className="bg-gray-800 rounded-xl p-6 max-w-6xl w-full max-h-[90vh] overflow-y-auto border-2 border-purple-500">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">Team Squads</h2>
-                <button
-                  onClick={() => setShowTeamSquads(false)}
-                  className="text-white hover:text-gray-400 text-2xl font-bold"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {teamSquads.map((squad) => (
-                  <div key={squad.team.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
-                    <div className="flex items-center gap-3 mb-3">
-                      {squad.team.logo ? (
-                        <img
-                          src={getImageUrl(squad.team.logo)}
-                          alt={squad.team.name}
-                          className="w-12 h-12 object-cover rounded-full"
-                          onError={(e) => {
-                            e.target.src = 'https://via.placeholder.com/48?text=Team';
-                          }}
-                        />
-                      ) : (
-                        <div className="w-12 h-12 bg-gray-600 rounded-full flex items-center justify-center text-white font-bold">
-                          {squad.team.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="flex-1">
-                        <div className="text-white font-bold text-lg">{squad.team.name}</div>
-                        {squad.team.owner_name && (
-                          <div className="text-gray-400 text-sm">Owner: {squad.team.owner_name}</div>
-                        )}
-                        <div className="text-yellow-400 text-sm">Players: {squad.players.length}</div>
-                      </div>
-                    </div>
-                    <div className="space-y-2 max-h-64 overflow-y-auto">
-                      {squad.players.length > 0 ? (
-                        squad.players.map((player) => (
-                          <div key={player.id} className="bg-gray-800 rounded p-2 flex items-center gap-2">
-                            {player.image && (
-                              <img
-                                src={getImageUrl(player.image)}
-                                alt={player.name}
-                                className="w-10 h-10 object-cover rounded"
-                                onError={(e) => {
-                                  e.target.src = 'https://via.placeholder.com/40?text=P';
-                                }}
-                              />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <div className="text-white font-semibold text-sm truncate">{player.name}</div>
-                              <div className="text-gray-400 text-xs">{player.role}</div>
-                            </div>
-                            <div className="text-green-400 font-semibold text-sm">
-                              ₹{player.sold_price?.toLocaleString() || '0'}
-                            </div>
-                            <button
-                              onClick={() => handleRemovePlayerFromTeam(player.id, player.name)}
-                              className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs whitespace-nowrap transition-colors"
-                              title="Remove from team and return to auction"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="text-gray-400 text-sm text-center py-4">No players sold yet</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {teamSquads.length === 0 && (
-                  <div className="col-span-full text-center text-gray-400 py-8">
-                    No teams found
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-        {/* Purse Monitoring Modal */}
-        {showPurseMonitoring && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-            <div className="bg-gray-800 rounded-xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto border-2 border-green-500">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">Team Purse Monitoring</h2>
-                <button
-                  onClick={() => setShowPurseMonitoring(false)}
-                  className="text-white hover:text-gray-400 text-2xl font-bold"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {teams.map((team) => (
-                  <div key={team.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
-                    <div className="flex items-center gap-3 mb-3">
-                      {team.logo ? (
-                        <img
-                          src={getImageUrl(team.logo)}
-                          alt={team.name}
-                          className="w-12 h-12 object-cover rounded-full"
-                          onError={(e) => {
-                            e.target.src = 'https://via.placeholder.com/48?text=Team';
-                          }}
-                        />
-                      ) : (
-                        <div className="w-12 h-12 bg-gray-600 rounded-full flex items-center justify-center text-white font-bold">
-                          {team.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="flex-1">
-                        <div className="text-white font-bold truncate">{team.name}</div>
-                        <div className="text-gray-400 text-sm">Owner: {team.owner_name || 'N/A'}</div>
-                      </div>
-                    </div>
-                    <div className="bg-gray-800 p-3 rounded-lg border border-gray-600">
-                      <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">REMAINING PURSE</div>
-                      <div className="text-2xl font-bold text-green-400">₹{team.budget?.toLocaleString() || '0'}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Bidding Logic Modal */}
-        {showBiddingLogicModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-            <div className="bg-gray-800 rounded-xl p-6 max-w-lg w-full border-2 border-yellow-500">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-white">Bidding Logic Settings</h2>
-                <button
-                  onClick={() => setShowBiddingLogicModal(false)}
-                  className="text-white hover:text-gray-400 text-2xl font-bold"
-                >
-                  ×
-                </button>
-              </div>
-              <div className="space-y-6">
-                <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-white font-semibold">Enforce Max Bid Logic</label>
-                    <button
-                      onClick={() => handleUpdateEnforceMaxBid(!enforceMaxBid)}
-                      className={`px-4 py-2 rounded-lg font-bold transition-colors ${enforceMaxBid ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-400'}`}
-                    >
-                      {enforceMaxBid ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-                  <p className="text-sm text-gray-400">
-                    If <strong>ON</strong>, owners MUST keep enough money for their remaining player slots (₹1000 per player).<br />
-                    If <strong>OFF</strong>, owners can bid their entire purse on any single player.
-                  </p>
+        {
+          showTeamSquads && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+              <div className="bg-gray-800 rounded-xl max-w-6xl w-full max-h-[90vh] flex flex-col border-2 border-purple-500">
+                <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                  <h2 className="text-2xl font-bold text-white">Team Squads</h2>
+                  <button
+                    onClick={() => setShowTeamSquads(false)}
+                    className="text-white hover:text-gray-400 text-2xl font-bold px-2"
+                  >
+                    ×
+                  </button>
                 </div>
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {teamSquads.map((squad) => (
+                      <div key={squad.team.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
+                        <div className="flex items-center gap-3 mb-3">
+                          {squad.team.logo ? (
+                            <img
+                              src={getImageUrl(squad.team.logo)}
+                              alt={squad.team.name}
+                              className="w-12 h-12 object-cover rounded-full"
+                              onError={(e) => {
+                                e.target.src = 'https://via.placeholder.com/48?text=Team';
+                              }}
+                            />
+                          ) : (
+                            <div className="w-12 h-12 bg-gray-600 rounded-full flex items-center justify-center text-white font-bold">
+                              {squad.team.name.charAt(0)}
+                            </div>
+                          )}
+                          <div className="flex-1">
+                            <div className="text-white font-bold text-lg">{squad.team.name}</div>
+                            {squad.team.owner_name && (
+                              <div className="text-gray-400 text-sm">Owner: {squad.team.owner_name}</div>
+                            )}
+                            <div className="text-yellow-400 text-sm">Players: {squad.players.length}</div>
+                          </div>
+                        </div>
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                          {squad.players.length > 0 ? (
+                            squad.players.map((player) => (
+                              <div key={player.id} className="bg-gray-800 rounded p-2 flex items-center gap-2">
+                                {player.image && (
+                                  <img
+                                    src={getImageUrl(player.image)}
+                                    alt={player.name}
+                                    className="w-10 h-10 object-cover rounded"
+                                    onError={(e) => {
+                                      e.target.src = 'https://via.placeholder.com/40?text=P';
+                                    }}
+                                  />
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-white font-semibold text-sm truncate">{player.name}</div>
+                                  <div className="text-gray-400 text-xs">{player.role}</div>
+                                </div>
+                                <div className="text-green-400 font-semibold text-sm">
+                                  ₹{player.sold_price?.toLocaleString() || '0'}
+                                </div>
+                                <button
+                                  onClick={() => handleRemovePlayerFromTeam(player.id, player.name)}
+                                  className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs whitespace-nowrap transition-colors"
+                                  title="Remove from team and return to auction"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="text-gray-400 text-sm text-center py-4">No players sold yet</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {teamSquads.length === 0 && (
+                      <div className="col-span-full text-center text-gray-400 py-8">
+                        No teams found
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )
+        }
 
-                <div className="bg-blue-900/20 p-4 rounded-lg border border-blue-500/30">
-                  <h4 className="text-blue-200 font-bold text-sm uppercase tracking-wider mb-2">Theoretical Team Limits</h4>
-                  <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                    {teams.map(team => (
-                      <div key={team.id} className="flex justify-between text-xs border-b border-gray-700 pb-1">
-                        <span className="text-white truncate mr-2">{team.name}</span>
-                        <span className="text-blue-300 font-mono">Max: ₹{team.budget?.toLocaleString()}</span>
+        {/* Purse Monitoring Modal */}
+        {
+          showPurseMonitoring && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+              <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] flex flex-col border-2 border-green-500">
+                <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                  <h2 className="text-2xl font-bold text-white">Team Purse Monitoring</h2>
+                  <button
+                    onClick={() => setShowPurseMonitoring(false)}
+                    className="text-white hover:text-gray-400 text-2xl font-bold px-2"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {teams.map((team) => (
+                      <div key={team.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
+                        <div className="flex items-center gap-3 mb-3">
+                          {team.logo ? (
+                            <img
+                              src={getImageUrl(team.logo)}
+                              alt={team.name}
+                              className="w-12 h-12 object-cover rounded-full"
+                              onError={(e) => {
+                                e.target.src = 'https://via.placeholder.com/48?text=Team';
+                              }}
+                            />
+                          ) : (
+                            <div className="w-12 h-12 bg-gray-600 rounded-full flex items-center justify-center text-white font-bold">
+                              {team.name.charAt(0)}
+                            </div>
+                          )}
+                          <div className="flex-1">
+                            <div className="text-white font-bold truncate">{team.name}</div>
+                            <div className="text-gray-400 text-sm">Owner: {team.owner_name || 'N/A'}</div>
+                          </div>
+                        </div>
+                        <div className="bg-gray-800 p-3 rounded-lg border border-gray-600">
+                          <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">REMAINING PURSE</div>
+                          <div className="text-2xl font-bold text-green-400">₹{team.budget?.toLocaleString() || '0'}</div>
+                        </div>
                       </div>
                     ))}
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )
+        }
+
+        {/* Bidding Logic Modal */}
+        {
+          showBiddingLogicModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+              <div className="bg-gray-800 rounded-xl max-w-lg w-full max-h-[90vh] flex flex-col border-2 border-yellow-500">
+                <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                  <h2 className="text-2xl font-bold text-white">Bidding Logic Settings</h2>
+                  <button
+                    onClick={() => setShowBiddingLogicModal(false)}
+                    className="text-white hover:text-gray-400 text-2xl font-bold px-2"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="p-6 overflow-y-auto custom-scrollbar">
+                  <div className="space-y-6">
+                    <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600">
+                      <h3 className="text-white font-bold mb-4">Bid Increment Settings</h3>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-gray-400 text-xs mb-1">INCREMENT 1 (₹)</label>
+                          <input
+                            type="number"
+                            value={newIncrements.increment1}
+                            onChange={(e) => setNewIncrements({ ...newIncrements, increment1: parseInt(e.target.value) || 0 })}
+                            className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-gray-400 text-xs mb-1">INCREMENT 2 (₹)</label>
+                          <input
+                            type="number"
+                            value={newIncrements.increment2}
+                            onChange={(e) => setNewIncrements({ ...newIncrements, increment2: parseInt(e.target.value) || 0 })}
+                            className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded text-white"
+                          />
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleUpdateIncrements}
+                        className="w-full mt-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded font-bold transition-colors"
+                      >
+                        Save Bid Increments
+                      </button>
+                    </div>
+
+                    <div className="bg-gray-700/50 p-4 rounded-lg border border-gray-600">
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-white font-semibold">Enforce Max Bid Logic</label>
+                        <button
+                          onClick={() => handleUpdateEnforceMaxBid(!enforceMaxBid)}
+                          className={`px-4 py-2 rounded-lg font-bold transition-colors ${enforceMaxBid ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-400'}`}
+                        >
+                          {enforceMaxBid ? 'ON' : 'OFF'}
+                        </button>
+                      </div>
+                      <p className="text-sm text-gray-400">
+                        If <strong>ON</strong>, owners MUST keep enough money for their remaining player slots (₹1000 per player).<br />
+                        If <strong>OFF</strong>, owners can bid their entire purse on any single player.
+                      </p>
+                    </div>
+
+                    <div className="bg-blue-900/20 p-4 rounded-lg border border-blue-500/30">
+                      <h4 className="text-blue-200 font-bold text-sm uppercase tracking-wider mb-2">Theoretical Team Limits</h4>
+                      <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                        {teams.map(team => (
+                          <div key={team.id} className="flex justify-between text-xs border-b border-gray-700 pb-1">
+                            <span className="text-white truncate mr-2">{team.name}</span>
+                            <span className="text-blue-300 font-mono">Max: ₹{team.budget?.toLocaleString()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )
+        }
       </div>
+
+      {/* Team Credentials Modal */}
+      {
+        showCredentialsModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="bg-gray-800 rounded-xl max-w-4xl w-full max-h-[90vh] flex flex-col border-2 border-indigo-500">
+              <div className="flex justify-between items-center p-6 border-b border-gray-700 bg-gray-800 rounded-t-lg sticky top-0 z-10">
+                <h2 className="text-2xl font-bold text-white">Team Credentials</h2>
+                <button
+                  onClick={() => setShowCredentialsModal(false)}
+                  className="text-white hover:text-gray-400 text-2xl font-bold px-2"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="p-6 overflow-y-auto custom-scrollbar">
+                <div className="mb-4 bg-indigo-900/30 p-4 rounded-lg border border-indigo-500/50 text-indigo-200 text-sm">
+                  <p><strong>Note:</strong> These credentials are automatically generated when a team is created. Share these with Team Owners to allow them to log in.</p>
+                  <p className="mt-1">For security, the generated ID is used as both the <strong>Username</strong> and <strong>Password</strong> initially.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full bg-gray-700 rounded-lg overflow-hidden">
+                    <thead className="bg-gray-900 text-gray-300">
+                      <tr>
+                        <th className="px-4 py-3 text-left">Team Name</th>
+                        <th className="px-4 py-3 text-left">Username</th>
+                        <th className="px-4 py-3 text-left">Password</th>
+                        <th className="px-4 py-3 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-600">
+                      {teams.map((team) => (
+                        <tr key={team.id} className="hover:bg-gray-600/50 transition-colors">
+                          <td className="px-4 py-3 text-white font-medium flex items-center gap-3">
+                            {team.logo ? (
+                              <img
+                                src={getImageUrl(team.logo)}
+                                alt={team.name}
+                                className="w-8 h-8 rounded-full object-cover"
+                                onError={(e) => e.target.src = 'https://via.placeholder.com/32?text=T'}
+                              />
+                            ) : (
+                              <div className="w-8 h-8 bg-gray-600 rounded-full flex items-center justify-center text-xs">
+                                {team.name.charAt(0)}
+                              </div>
+                            )}
+                            {team.name}
+                          </td>
+
+                          {/* Editing Mode */}
+                          {editingCredentials === team.id ? (
+                            <>
+                              <td className="px-4 py-3">
+                                <input
+                                  type="text"
+                                  value={credentialForm.username}
+                                  onChange={(e) => setCredentialForm({ ...credentialForm, username: e.target.value })}
+                                  className="w-full p-2 bg-gray-700 border border-indigo-500 rounded text-white text-sm focus:outline-none"
+                                  placeholder="Username"
+                                />
+                              </td>
+                              <td className="px-4 py-3">
+                                <input
+                                  type="text"
+                                  value={credentialForm.password}
+                                  onChange={(e) => setCredentialForm({ ...credentialForm, password: e.target.value })}
+                                  className="w-full p-2 bg-gray-700 border border-indigo-500 rounded text-white text-sm focus:outline-none"
+                                  placeholder="Password"
+                                />
+                              </td>
+                              <td className="px-4 py-3 text-center flex justify-center gap-2">
+                                <button
+                                  onClick={() => {
+                                    if (!credentialForm.username || !credentialForm.password) return alert("Both fields required");
+
+                                    // Call API to update
+                                    fetch(`${API_URL}/admin/teams/${team.id}/credentials`, {
+                                      method: 'PUT',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify(credentialForm)
+                                    })
+                                      .then(res => res.json())
+                                      .then(data => {
+                                        if (data.success) {
+                                          setEditingCredentials(null);
+                                          // Update local state
+                                          setTeams(teams.map(t => t.id === team.id ? data.team : t));
+                                        } else {
+                                          alert(data.error);
+                                        }
+                                      })
+                                      .catch(err => alert("Error updating: " + err.message));
+                                  }}
+                                  className="p-2 bg-green-600 hover:bg-green-500 text-white rounded shadow"
+                                  title="Save"
+                                >
+                                  ✓
+                                </button>
+                                <button
+                                  onClick={() => setEditingCredentials(null)}
+                                  className="p-2 bg-red-600 hover:bg-red-500 text-white rounded shadow"
+                                  title="Cancel"
+                                >
+                                  ✕
+                                </button>
+                              </td>
+                            </>
+                          ) : (
+                            /* View Mode */
+                            <>
+                              <td className="px-4 py-3 font-mono text-yellow-400">
+                                {team.access_code || <span className="text-gray-500 text-sm italic">N/A</span>}
+                              </td>
+                              <td className="px-4 py-3 font-mono text-blue-300">
+                                {team.plain_password || team.access_code || <span className="text-gray-500 text-sm italic">N/A</span>}
+                              </td>
+                              <td className="px-4 py-3 text-center flex justify-center gap-2">
+                                <button
+                                  onClick={() => {
+                                    setEditingCredentials(team.id);
+                                    setCredentialForm({
+                                      username: team.access_code || '',
+                                      password: team.plain_password || team.access_code || ''
+                                    });
+                                  }}
+                                  className="p-2 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
+                                  title="Edit"
+                                >
+                                  ✏️
+                                </button>
+                                {(team.access_code || team.plain_password) && (
+                                  <button
+                                    onClick={() => {
+                                      const user = team.access_code;
+                                      const pass = team.plain_password || team.access_code;
+                                      navigator.clipboard.writeText(`Username: ${user}\nPassword: ${pass}`);
+                                      alert(`Copied credentials for ${team.name}`);
+                                    }}
+                                    className="p-2 bg-gray-600 hover:bg-gray-500 text-white rounded transition-colors"
+                                    title="Copy"
+                                  >
+                                    📋
+                                  </button>
+                                )}
+                              </td>
+                            </>
+                          )}
+                        </tr>
+                      ))}
+                      {teams.length === 0 && (
+                        <tr>
+                          <td colSpan="3" className="px-4 py-8 text-center text-gray-400">
+                            No teams found.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      }
     </div>
   );
 }

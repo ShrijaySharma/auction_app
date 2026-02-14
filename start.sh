@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "Starting Cricket Auction System..."
+echo "Starting EzAuction System..."
 echo ""
 echo "Starting Backend Server..."
 cd backend

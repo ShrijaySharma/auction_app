@@ -1,4 +1,4 @@
-# 🏏 Cricket Auction System
+# 🏏 EzAuction System
 
 A complete, production-ready, local-hosted cricket auction system that runs fully on your laptop and can be accessed by multiple users on the same Wi-Fi network.
 

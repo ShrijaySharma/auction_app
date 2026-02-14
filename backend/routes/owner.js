@@ -63,8 +63,7 @@ router.get('/current-info', (req, res) => {
                                 status: state?.status || 'STOPPED',
                                 bidIncrements: {
                                     increment1: state?.bid_increment_1 || 500,
-                                    increment2: state?.bid_increment_2 || 1000,
-                                    increment3: state?.bid_increment_3 || 5000
+                                    increment2: state?.bid_increment_2 || 1000
                                 },
                                 stats,
                                 walletBalance: totalBudget,
@@ -161,8 +160,7 @@ router.get('/current-info', (req, res) => {
                                         status: state.status,
                                         bidIncrements: {
                                             increment1: state.bid_increment_1,
-                                            increment2: state.bid_increment_2,
-                                            increment3: state.bid_increment_3
+                                            increment2: state.bid_increment_2
                                         },
                                         stats,
                                         walletBalance: availableBalance,
@@ -231,7 +229,7 @@ router.post('/bid', (req, res) => {
                     }
 
                     const minimumBid = currentHighest
-                        ? currentHighest.amount + Math.min(state.bid_increment_1, state.bid_increment_2, state.bid_increment_3)
+                        ? currentHighest.amount + Math.min(state.bid_increment_1, state.bid_increment_2)
                         : player.base_price;
 
                     if (amount < minimumBid) {

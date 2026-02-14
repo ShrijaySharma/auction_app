@@ -38,8 +38,8 @@ export const lockBidding = async (locked) => {
   return response.data;
 };
 
-export const updateBidIncrements = async (increment1, increment2, increment3) => {
-  const response = await api.post('/admin/bid-increments', { increment1, increment2, increment3 });
+export const updateBidIncrements = async (increment1, increment2) => {
+  const response = await api.post('/admin/bid-increments', { increment1, increment2 });
   return response.data;
 };
 

@@ -24,7 +24,7 @@ function OwnerDashboard({ user }) {
   const [currentBid, setCurrentBid] = useState(0);
   const [biddingLocked, setBiddingLocked] = useState(false);
   const [status, setStatus] = useState('STOPPED');
-  const [bidIncrements, setBidIncrements] = useState({ increment1: 500, increment2: 1000, increment3: 5000 });
+  const [bidIncrements, setBidIncrements] = useState({ increment1: 500, increment2: 1000 });
   const [bidding, setBidding] = useState({});
   const [bidFlash, setBidFlash] = useState(false);
   const [stats, setStats] = useState({ sold: 0, unsold: 0, available: 0 });
@@ -117,8 +117,7 @@ function OwnerDashboard({ user }) {
     newSocket.on('bid-increments-changed', (data) => {
       setBidIncrements({
         increment1: data.increment1,
-        increment2: data.increment2,
-        increment3: data.increment3
+        increment2: data.increment2
       });
     });
 
@@ -402,7 +401,7 @@ function OwnerDashboard({ user }) {
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
                   </svg>
                 </button>
-                <div className="text-yellow-400 font-bold text-lg sm:text-2xl">CricAuction™ (Live v1.1)</div>
+                <div className="text-yellow-400 font-bold text-lg sm:text-2xl">EzAuction™</div>
               </div>
               <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto justify-between sm:justify-end">
                 <div className="text-white text-xs sm:text-sm flex gap-2 sm:gap-4">
@@ -538,11 +537,6 @@ function OwnerDashboard({ user }) {
                   >
                     Remaining Players ({stats.available || 0})
                   </button>
-                  {status === 'LIVE' && (
-                    <div className="bg-green-500 text-white px-3 sm:px-6 py-2 sm:py-3 rounded-lg font-bold text-xs sm:text-sm shadow-lg animate-pulse">
-                      🟢 LIVE
-                    </div>
-                  )}
                   {biddingLocked && (
                     <div className="bg-red-600 text-white px-3 sm:px-6 py-2 sm:py-3 rounded-lg font-bold text-xs sm:text-sm shadow-lg">
                       🔒 LOCKED
@@ -576,19 +570,19 @@ function OwnerDashboard({ user }) {
 
                 {/* Increment Buttons Row */}
                 <div className="flex flex-row items-center justify-center gap-4 sm:gap-8 mt-4">
-                  {/* +2000 Button */}
+                  {/* First Configurable Increment Button */}
                   <button
-                    onClick={() => handleBid(2000)}
-                    disabled={!canBid || bidding[2000]}
-                    className={`flex-1 sm:flex-none px-4 sm:px-12 py-3 sm:py-5 rounded-lg font-bold text-sm sm:text-2xl transition-all shadow-lg ${canBid && !bidding[2000]
+                    onClick={() => handleBid(bidIncrements.increment1)}
+                    disabled={!canBid || bidding[bidIncrements.increment1]}
+                    className={`flex-1 sm:flex-none px-4 sm:px-12 py-3 sm:py-5 rounded-lg font-bold text-sm sm:text-2xl transition-all shadow-lg ${canBid && !bidding[bidIncrements.increment1]
                       ? 'bg-green-600 hover:bg-green-700 text-white transform hover:scale-105 active:scale-95'
                       : 'bg-gray-600 text-gray-400 cursor-not-allowed'
                       }`}
                   >
-                    +₹{formatIndianNumber(2000)}
+                    +₹{formatIndianNumber(bidIncrements.increment1)}
                   </button>
 
-                  {/* Standard Increment Button */}
+                  {/* Second Configurable Increment Button */}
                   <button
                     onClick={() => handleBid(bidIncrements.increment2)}
                     disabled={!canBid || bidding[bidIncrements.increment2]}

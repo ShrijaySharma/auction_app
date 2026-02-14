@@ -43,7 +43,7 @@ function Login({ onLogin }) {
       <div className="w-full max-w-md">
         <div className="bg-gray-800 rounded-2xl shadow-2xl p-8 border border-gray-700">
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold text-white mb-2">🏏 Cricket Auction</h1>
+            <h1 className="text-4xl font-bold text-white mb-2">🏏 EzAuction</h1>
             <p className="text-gray-400">Sign in to continue</p>
           </div>
 
